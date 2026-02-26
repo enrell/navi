@@ -3,8 +3,6 @@
 > POC - Will change a lot, contact-me to suggest something.
 
 <p align="center">
-  <img src="navi-1.png" alt="Navi Interface" width="600">
-  <br>
   <em>NAVI: Your gateway to the Wired</em>
 </p>
 
