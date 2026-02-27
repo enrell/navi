@@ -43,25 +43,23 @@ Business logic is completely isolated from external concerns. This means:
 - Swappable storage (SQLite, Postgres, S3)
 - swappable UIs (TUI, REST API, Discord, Telegram)
 
-### Multi-Agent Agency
+### Runtime Engine — Agents Are Data
 
-Instead of a single monolithic agent that tries to do everything, Navi uses a **specialized agency** pattern:
+Navi uses a **GenericAgent Runtime Engine**. Rather than hardcoding agent types in Go, every agent is defined by two files:
 
-```go
-type Agency struct {
-    Planner    *Agent  // Decides the steps
-    Researcher *Agent  // Searches and gathers info
-    Coder      *Agent  // Writes and reviews code
-    Executor   *Agent  // Runs tools and APIs
-    Verifier   *Agent  // Validates results
-}
+```
+~/.config/navi/agents/<name>/
+├── config.toml   ← LLM, capabilities, isolation backend
+└── AGENT.md      ← system prompt (the agent's "brain")
 ```
 
-Each agent has a **single responsibility**, leading to:
-- Reduced context dilution
-- Lower hallucination rates
-- Clear failure boundaries
-- Easier debugging
+Create a new specialist (researcher, coder, planner, security auditor…) by writing config files — **no recompilation**. The orchestrator hot-loads new agents at runtime via `navi agent create`.
+
+Benefits:
+- **Zero-downtime** agent creation and removal
+- **Safer** than plugin marketplaces — no untrusted Go code, just config files
+- **LLM-generatable** — ask Navi to design a new agent for you
+- **Composable** — route tasks to agents by their capability set
 
 ### Capability-Based Authority
 

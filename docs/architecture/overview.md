@@ -1,6 +1,6 @@
 # Architecture Overview
 
-Navi is built on **Hexagonal Architecture** (also known as Ports & Adapters) with a **Multi-Agent Agency** core. This document explains the architectural decisions and their rationale.
+Navi is built on **Hexagonal Architecture** (Ports & Adapters) with a **GenericAgent Runtime Engine** at its core. Agents, tools, and skills are **pure data** (`config.toml` + `AGENT.md`) — the engine executes them without recompilation.
 
 ## Why Hexagonal Architecture?
 
@@ -54,99 +54,113 @@ This makes testing impossible, changing providers painful, and introduces tight 
 
 The core only knows about interfaces. Adapters implement those interfaces. Entry points (CLI, TUI, API) use the core.
 
+## Directory Structure
+
+```text
+cmd/navi/              — entry point; CLI dispatch + wiring
+internal/
+  core/
+    domain/            — Agent interface, GenericAgent, AgentConfig, types
+    ports/             — LLMPort, IsolationPort, AgentConfigRegistry, EventLog
+    services/
+      orchestrator/    — capability-based routing, agent lifecycle
+      capabilities/    — capability string parser + Satisfies matcher
+  adapters/
+    llm/openai/        — OpenAI REST adapter (no external SDK)
+    isolation/
+      native/          — host OS with path restriction
+      docker/          — ephemeral container via docker run
+      bubblewrap/      — bwrap user namespace sandbox
+    registry/localfs/  — reads/writes ~/.config/navi/agents/*/
+    storage/sqlite/    — event log + agent persistence (GORM)
+  ui/tui/              — terminal dashboard
+pkg/                   — shared utilities
+configs/agents/        — example agent configs
+  researcher/config.toml
+  researcher/AGENT.md
+  coder/config.toml
+  coder/AGENT.md
+```
+
 ## Core Components
 
 ### 1. Orchestrator (The Maestro)
 
-The orchestrator is the central brain that coordinates agents, manages workflows, and enforces security policies.
+`internal/core/services/orchestrator/orchestrator.go`
 
-Responsibilities:
-- Receive user requests
-- Delegate to appropriate agents
-- Coordinate parallel execution
-- Aggregate results
-- Enforce capability constraints
-- Audit all actions
+The orchestrator is the runtime hub. It:
+- Loads all agent configs from `~/.config/navi/agents/` on startup
+- Creates a `GenericAgent` for each config with injected LLM and Isolation adapters
+- Routes tasks to agents by **capability matching** (`agent.caps ⊇ task.required`)
+- Supports **hot-registration**: `navi agent create` adds an agent at runtime without restart
+- Persists all events to the SQLite event log
 
-### 2. Agency (Multi-Agent System)
+### 2. GenericAgent (The Universal Runtime)
 
-Navi uses **specialized agents** rather than a single monolithic "god agent."
+`internal/core/domain/agent.go`
 
-#### Agent Types
-
-| Agent | Responsibility | Context Scope |
-|-------|----------------|---------------|
-| **Planner** | Breaks down tasks into steps | High-level goals only |
-| **Researcher** | Gathers information, searches | External data sources |
-| **Coder** | Writes, reviews, refactors code | Codebase + documentation |
-| **Executor** | Runs tools, APIs, scripts | Execution environment |
-| **Verifier** | Validates outputs, catches errors | Expected outcomes + constraints |
-
-**Key Principle**: Each agent has a **single, focused responsibility**. They communicate via a well-defined protocol, not by sharing memory.
-
-#### Why Specialization Works
-
-LLMs suffer from **context dilution**—around token 8,000 on a 32K context model, they start ignoring early instructions. By splitting work among specialized agents:
-
-- Each agent has a **smaller cognitive scope**
-- Instructions are clearer and less conflicting
-- Hallucinations are contained and caught by verifiers
-- Failures are isolated, not catastrophic
-
-### 3. Ports (Interfaces)
-
-Ports define contracts that the core depends on. They are pure Go interfaces.
-
-#### LLMPort
+There is **one** agent implementation. Its behavior is entirely driven by `config.toml` + `AGENT.md`.
 
 ```go
+type GenericAgent struct {
+    config    AgentConfig   // loaded from config.toml + AGENT.md
+    llm       LLMPort       // adapter injected by Orchestrator
+    isolation IsolationPort // adapter injected by Orchestrator
+    inbox     chan AgentMessage
+    outbox    chan AgentMessage
+}
+```
+
+Create any specialist (researcher, coder, planner, etc.) by writing two files — no Go code required.
+
+### 3. Capability System
+
+`internal/core/services/capabilities/`
+
+Capabilities are strings that describe exactly what an agent may do:
+
+| String | Grants |
+|---|---|
+| `filesystem:workspace:rw` | Read+write the workspace dir |
+| `exec:bash,go,git` | Run these binaries |
+| `network:api.github.com:443` | Connect to this HTTPS endpoint |
+| `tool:mcp-name` | Call a local MCP server |
+
+The capability parser tokenises strings; `Satisfies(agentCaps, required)` handles routing.
+
+### 4. Ports (Interfaces)
+
+`internal/core/ports/interfaces.go`
+
+| Port | Purpose | Adapters |
+|---|---|---|
+| `LLMPort` | Call any language model | `adapters/llm/openai` (+ Ollama-compat) |
+| `IsolationPort` | Safe command/file execution | `isolation/native`, `docker`, `bubblewrap` |
+| `AgentConfigRegistry` | Load/save agent configs from disk | `registry/localfs` |
+| `EventLog` | Persist all events | `storage/sqlite` |
+| `VectorStore` | Long-term semantic memory (planned) | — |
+
+```go
+// core ports (abridged)
 type LLMPort interface {
-    Generate(ctx context.Context, prompt Prompt) (Response, error)
-    Embed(ctx context.Context, text string) (Vector, error)
-    Stream(ctx context.Context, prompt Prompt) (<-chan Token, error)
+    Generate(ctx context.Context, prompt string) (string, error)
+    Stream(ctx context.Context, prompt string, chunk func(string)) error
+    Health(ctx context.Context) error
 }
-```
 
-Implemented by: `OpenAIAdapter`, `AnthropicAdapter`, `OllamaAdapter`, etc.
-
-#### IsolationPort
-
-```go
 type IsolationPort interface {
-    Execute(ctx context.Context, cmd Command, caps Capabilities) (Result, error)
-    FileRead(ctx context.Context, path string) ([]byte, error)
-    FileWrite(ctx context.Context, path string, data []byte) error
-    Mount(ctx context.Context, source, target string, readonly bool) error
+    Execute(ctx, cmd, args, env) (exitCode, stdout, stderr, err)
+    ReadFile(ctx, path) (string, error)
+    WriteFile(ctx, path, content) error
+    Cleanup(ctx) error
+}
+
+type AgentConfigRegistry interface {
+    LoadAll() ([]domain.AgentConfig, error)
+    Save(cfg domain.AgentConfig) error
+    Delete(id string) error
 }
 ```
-
-Implemented by: `DockerAdapter`, `BubblewrapAdapter`, `NativeAdapter`.
-
-#### RepositoryPort
-
-```go
-type RepositoryPort interface {
-    SaveEvent(ctx context.Context, event Event) error
-    GetHistory(ctx context.Context, filter HistoryFilter) ([]Event, error)
-    SaveWorkspaceState(ctx context.Context, workspace Workspace) error
-    GetWorkspaceState(ctx context.Context, id string) (Workspace, error)
-}
-```
-
-Implemented by: `SQLiteRepository`, `PostgresRepository`.
-
-#### AuthPort
-
-```go
-type AuthPort interface {
-    ValidateToken(ctx context.Context, token string) (User, error)
-    CreateSession(ctx context.Context, user User) (Session, error)
-    RevokeSession(ctx context.Context, sessionID string) error
-    CheckPermission(ctx context.Context, user User, resource string, action string) bool
-}
-```
-
-Implemented by: `LocalAuthAdapter`, `OAuthAdapter`.
 
 ### 4. Adapters (Implementations)
 
@@ -407,13 +421,13 @@ Again, no core changes needed.
 
 ## Key Design Decisions
 
-### Why Not a Plugin Architecture?
+### Why Not a Plugin Marketplace?
 
-Plugins can introduce stability and security risks. Adapters are compiled into the binary, ensuring:
-- Type safety
-- Auditability
-- Version compatibility
-- No runtime dependency surprises
+External plugin marketplaces (npm-style, VS Code extensions) open vectors for supply-chain attacks. Navi's approach:
+- **Agents are data** — `config.toml` + `AGENT.md` files, not compiled code
+- **Adapters are compiled-in** — type-safe, auditable, version-compatible
+- **No external plugin registry** — no unknown code runs inside the process
+- **MCP for external tools** — run untrusted tool servers in their own sandbox via `tool:<name>` capability
 
 ### Why Go?
 

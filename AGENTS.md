@@ -1,146 +1,340 @@
-# Agents Architecture
+# Agents
 
-This document describes Navi's multi-agent system from an architectural perspective: how agents are defined, how they interact with the orchestrator, and the security model that governs them.
+This document is the authoritative technical reference for Navi's agent system.
 
-## Core Principle: Configuration-Driven Agents
+## Design Philosophy
 
-Unlike traditional systems where agent types are hard-coded, Navi treats **agents as data**. An agent is defined by two files:
+**Agents are data, not code.** A Navi agent is fully defined by two files:
 
-- `config.toml` — declares capabilities, isolation backend, LLM settings
-- `AGENT.md` — system prompt that shapes the LLM's behavior
+| File | Purpose |
+|------|---------|
+| `config.toml` | Identity, LLM, capabilities, isolation backend |
+| `AGENT.md` | System prompt — the agent's "personality" and output format |
 
-The runtime provides a single `GenericAgent` implementation that reads these files and operates accordingly. This enables users to create, share, and modify agents without recompiling Navi.
+The `GenericAgent` in `internal/core/domain/agent.go` is the **only** agent implementation. It is a universal runtime that executes behaviors defined by these files. This means:
 
-## Agent Identity & Trust
+- ✅ Create a new agent → drop config files, no recompilation
+- ✅ Update an agent → edit `AGENT.md`, the LLM picks up the change
+- ✅ Delete an agent → run `navi agent remove <id>`
+- ✅ Share an agent → share two text files
 
-### Registration
+## Agent Interface
 
-Agents become **trusted** only after going through the **authenticated creation flow**:
+All agents satisfy the `domain.Agent` interface:
 
-1. User initiates agent creation via the TUI
-2. TUI prompts for authentication (password/biometric)
-3. Upon successful auth, TUI sends a `create_agent` tool call to the orchestrator
-4. Orchestrator writes the configuration files to `~/.config/navi/agents/<name>/`
-5. Orchestrator records the agent in the `agent_registry` table with `is_trusted = true`
-6. Orchestrator emits an `agent.created` event; TUI updates UI
-
-Only agents in the registry with `is_trusted = true` are allowed to invoke privileged tools (file write, shell exec, create_agent, etc.).
-
-### Untrusted Agents
-
-Any tool call bearing an `agent_id` that:
-
-- Is not present in the `agent_registry`, OR
-- Has `is_trusted = false`
-
-is rejected immediately and logged as `untrusted_agent` or `unregistered_agent`. The TUI may show an alert, allowing the user to register the agent if legitimate.
-
-This prevents:
-- Malicious external scripts from calling internal tools directly
-- Accidentally using an agent that was copied from elsewhere without registration
-- Unauthorized privilege escalation
-
-## Capability Model
-
-Agents operate under **capability-based authority**. The `config.toml` includes a `capabilities` list that grants specific permissions:
-
-- `filesystem:/path:rw` — read/write access to a path
-- `network:host:port` — network access to host:port
-- `exec:binary1,binary2` — allowed executables
-- `vision`, `ocr`, `audio` — multimodal capabilities
-
-These capabilities are **deny-by-default**. The orchestrator checks an agent's capabilities before:
-- Assigning a task (does the task require capabilities the agent lacks?)
-- Allowing a tool call (does the tool require a capability the agent lacks?)
-
-Isolation adapters enforce capabilities at runtime (e.g., Docker volume mounts, seccomp filters).
-
-## Tool Calls & Authentication
-
-Certain operations are exposed as **tools** that agents can invoke. Tools are not directly reachable by agents; they must be called via a structured `ToolCall` message to the orchestrator.
-
-### Tool Categories
-
-1. **Unprivileged tools** — no user interaction needed (e.g., `file_read`, `http_get` if capability granted)
-2. **Privileged tools** — require user authentication before execution (e.g., `create_agent`, `file_write`, `shell_exec`)
-
-### Auth Flow for Privileged Tools
-
-```
-Agent → Orchestrator: ToolCall{tool:"create_agent", args:{...}, request_id:"uuid"}
-
-Orchestrator:
-  - Verify agent is trusted (in registry)
-  - Check agent has capability for this tool
-  - Tool.RequiresAuth() == true → emit AuthRequest event with RequestID and description
-  → Block and wait
-
-TUI receives AuthRequest event → shows modal:
-  "Agent 'orchestrator' wants to: Create new agent 'research-2'"
-  [Authenticate] [Cancel]
-
-User enters password → TUI sends AuthResponse{RequestID, Credentials}
-
-Orchestrator:
-  - Verify credentials (against system or stored hash)
-  - If valid → proceed with Tool.Execute()
-  - If invalid → reject, log `auth_failed`
-  - Respond to agent with ToolResponse or Error
+```go
+type Agent interface {
+    ID() AgentID
+    Config() AgentConfig
+    Role() AgentRole
+    IsTrusted() bool
+    CanHandle(task Task) bool
+    Execute(ctx context.Context, task Task) (TaskResult, error)
+    CallTool(ctx context.Context, call ToolCall) (ToolResponse, error)
+}
 ```
 
-### Replay Protection
+The orchestrator depends only on this interface. `GenericAgent` is the only concrete implementation.
 
-Every tool call includes a unique `request_id` (UUID v4). The orchestrator tracks recent IDs to prevent replay attacks. Once a `request_id` is used, it cannot be reused.
+## GenericAgent
+
+`internal/core/domain/agent.go`
+
+```go
+type GenericAgent struct {
+    config    AgentConfig
+    llm       LLMPort       // injected by orchestrator via LLMFactory
+    isolation IsolationPort  // injected by orchestrator via IsolationFactory
+    inbox     chan AgentMessage
+    outbox    chan AgentMessage
+}
+```
+
+### Lifecycle
+
+1. **`NewGenericAgent(cfg, llm, isolation)`** — constructs with injected adapters.  
+2. **`Start(ctx)`** — starts background inbox goroutine.  
+3. **`Execute(ctx, task)`** — builds prompt = system prompt + task, calls LLM, parses JSON, applies file changes via `IsolationPort`.  
+4. **`Stop()`** — cancels the context, goroutine exits.
+
+### Task Execution Flow
+
+```
+Orchestrator
+    │
+    ├─ FindIdle(task)        ← capability-based routing
+    │
+    ▼
+GenericAgent.Execute(ctx, task)
+    │
+    ├─ buildPrompt()         ← systemPrompt + "\n\n---\n\nTask:\n" + task.Prompt
+    ├─ llm.Generate(ctx, prompt)
+    ├─ json.Unmarshal → ResultPayload
+    └─ isolation.WriteFile() ← apply each FileChange
+```
+
+### LLM Retry
+
+The agent retries transient LLM errors up to 3 times with linear backoff:
+
+```go
+for i := range 3 {
+    resp, err = a.llm.Generate(ctx, prompt)
+    if err == nil { return resp, nil }
+    time.Sleep(time.Duration(i+1) * time.Second)
+}
+```
+
+## Agent Configuration
+
+### Directory Layout
+
+```
+~/.config/navi/agents/<agent-id>/
+├── config.toml
+└── AGENT.md           (or any file name declared in config.toml's `prompt` field)
+```
+
+### `config.toml` Reference
+
+| Field | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `id` | string | ✅ | — | Unique ID, must match directory name |
+| `type` | string | — | `"generic"` | Agent type (only `"generic"` exists) |
+| `description` | string | — | — | Human-readable label |
+| `prompt` | string | ✅ | — | Filename of system prompt (e.g. `"AGENT.md"`) |
+| `llm.provider` | string | ✅ | — | `openai`, `ollama`, or any OpenAI-compatible API |
+| `llm.model` | string | ✅ | — | Model name (e.g. `gpt-4o`) |
+| `llm.api_key` | string | — | env `OPENAI_API_KEY` | API key (prefer env var) |
+| `llm.base_url` | string | — | `https://api.openai.com/v1` | Override for Ollama, Together, etc. |
+| `llm.temperature` | float | — | `0.7` | Sampling temperature |
+| `llm.max_tokens` | int | — | `4096` | Max tokens to generate |
+| `capabilities` | list(string) | ✅ | — | Granted capabilities (see below) |
+| `isolation` | string | — | `"native"` | Isolation backend: `native`, `docker`, `bubblewrap` |
+| `isolation_config` | table | — | — | Backend-specific: `image`, `memory`, `cpus` |
+| `timeout` | duration | — | `"30m"` | Task timeout |
+| `max_concurrent` | int | — | `5` | Max concurrent tasks |
+
+### Capability Strings
+
+Capabilities follow the format `<type>:<resource>:<mode>`:
+
+| String | Meaning |
+|---|---|
+| `filesystem:workspace:rw` | Read+write access to the workspace directory |
+| `filesystem:workspace:ro` | Read-only access |
+| `exec:bash,go,git` | May execute these binaries (comma-separated) |
+| `network:api.github.com:443` | May connect to this host on this port |
+| `network:*:443` | May connect to any HTTPS host |
+| `tool:mcp-name` | Access a local MCP server |
+| `vision` | Enable multimodal vision input |
+| `ocr:tesseract` | OCR via tesseract engine |
+| `audio:whisper` | Audio input via Whisper |
+
+### `AGENT.md` Format
+
+Write the system prompt in Markdown or plain text. Always include an output format specification. The recommended format is JSON for structured results:
+
+````markdown
+You are an expert software developer.
+
+## Constraints
+- Only modify files inside the workspace.
+- Never introduce security vulnerabilities.
+
+## Output Format
+
+```json
+{
+  "task_id": "<task id>",
+  "output": "<description of changes>",
+  "files": [
+    {"path": "relative/path", "content": "..."}
+  ],
+  "success": true
+}
+```
+````
+
+## Isolation Backends
+
+All agent side effects (file writes, command execution) go through `IsolationPort`.
+
+| Backend | Binary | Security | Best For |
+|---|---|---|---|
+| `native` | none | Path restriction only | Local dev, read-only tasks |
+| `docker` | `docker` | Full container isolation | VPS, multi-user, production |
+| `bubblewrap` | `bwrap` | User namespace sandbox | Linux desktop (Arch, Fedora) |
+
+The `IsolationPort` interface:
+
+```go
+type IsolationPort interface {
+    Execute(ctx, cmd, args, env) (exitCode, stdout, stderr, err)
+    ReadFile(ctx, path) (string, error)
+    WriteFile(ctx, path, content) error
+    Cleanup(ctx) error
+}
+```
+
+Adapters live in `internal/adapters/isolation/{native,docker,bubblewrap}/`.
+
+## Orchestrator & Agent Lifecycle
+
+### Startup (`orchestrator.Start`)
+
+1. `cfgReg.LoadAll()` — scans `~/.config/navi/agents/*/config.toml`
+2. For each config: construct `GenericAgent`, call `agent.Start(ctx)`
+3. Add to `InMemoryAgentRegistry`
+4. Emit `agent.loaded` event
+
+### Dynamic Registration (`navi agent create`)
+
+1. Interactive wizard collects config fields
+2. `LocalFSRegistry.Save(cfg)` writes `config.toml` + `AGENT.md` to disk
+3. `Orchestrator.RegisterAgent(ctx, cfg)` starts the agent immediately
+4. Emits `agent.created` event — TUI refreshes automatically
+
+### Task Routing
+
+The orchestrator uses capability-based routing:
+
+```go
+func (o *Orchestrator) Submit(ctx, task) (TaskResult, error) {
+    agent, ok := registry.FindIdle(task) // finds agent whose caps ⊇ task.Requirements
+    // ...
+    return agent.Execute(ctx, task)
+}
+```
+
+### Graceful Shutdown
+
+On `SIGINT`/`SIGTERM`:
+1. Root context cancelled
+2. All agent goroutines exit their select loop
+3. `Orchestrator.Shutdown()` calls `agent.Stop()` for all agents
 
 ## Agent Communication
 
-Agents do not communicate directly with each other. All messages go through the orchestrator:
+Agents communicate only with the orchestrator. There is no direct agent-to-agent messaging.
 
-- Incoming: `AgentMessage{From:"agent-x", To:"agent-y", Type:"request", Payload:Task}`
-- Orchestrator validates that `agent-x` and `agent-y` exist and are trusted, then routes.
+```go
+type AgentMessage struct {
+    From    AgentID
+    To      AgentID
+    Type    string      // "request" | "response" | "event" | "error"
+    Payload interface{} // TaskPayload | ResultPayload
+}
+```
 
-All messages are persisted to the event log for audit.
+All events are persisted to the SQLite `events` table for audit and replay.
 
-## Lifecycle
+## Memory & Context
 
-1. **Startup** — Orchestrator scans `~/.config/navi/agents/*/config.toml`, instantiates `GenericAgent` for each, starts message loop goroutine
-2. **Task Assignment** — Orchestrator selects idle agent with required capabilities, sends `AgentMessage`
-3. **Execution** — Agent builds prompt from system + task, calls LLM, may invoke tools via orchestrator
-4. **Shutdown** — Context cancellation; all agent goroutines exit gracefully
+### Short-Term (per-task)
 
-## Security Boundaries
+```go
+type TaskContext struct {
+    TaskID        string
+    Goal          string
+    WorkspacePath string
+    Capabilities  []Capability
+    History       []AgentMessage
+}
+```
 
-- **Capability boundary** — Agents cannot exceed declared capabilities; enforced by orchestrator and isolation adapters
-- **Authentication boundary** — Privileged tools require user presence; no passwordless elevation
-- **Registration boundary** — Only orchestrator can register agents, and only via authenticated TUI
-- **Isolation boundary** — Each agent's tool execution occurs in an isolated environment (Docker, Bubblewrap, or native sandbox)
+Context is not shared between concurrent tasks.
 
-## Persistence
+### Long-Term (planned)
 
-- **Agent Registry** — SQLite table `agent_registry` stores all trusted agents with metadata (registered_by, created_at, capabilities snapshot)
-- **Configuration** — `~/.config/navi/agents/<name>/config.toml` and `AGENT.md` (config as code)
-- **Event Log** — All agent actions, tool calls, auth events are recorded for audit and replay
+A `VectorStore` port is defined in `ports/interfaces.go` for persistent memory:
+
+```go
+type VectorStore interface {
+    Add(ctx, vector, metadata) (string, error)
+    Search(ctx, query, limit) ([]SearchResult, error)
+    Delete(ctx, id) error
+}
+```
+
+## CLI Commands
+
+```bash
+# Create a new agent interactively
+navi agent create
+
+# List all registered agents
+navi agent list
+
+# Remove an agent
+navi agent remove <agent-id>
+```
+
+## Testing
+
+### Unit Tests (Capability Parser)
+
+```bash
+go test ./internal/core/services/capabilities/...
+```
+
+### Mock LLM
+
+```go
+type MockLLM struct{ Response string }
+func (m *MockLLM) Generate(_ context.Context, _ string) (string, error) {
+    return m.Response, nil
+}
+func (m *MockLLM) Stream(_ context.Context, _ string, chunk func(string)) error {
+    chunk(m.Response); return nil
+}
+
+agent := domain.NewGenericAgent(cfg, &MockLLM{Response: `{"task_id":"t1","output":"ok","success":true}`}, nil)
+result, err := agent.Execute(context.Background(), task)
+```
+
+### Integration Test Skeleton
+
+```go
+func TestGenericAgent_Integration(t *testing.T) {
+    if testing.Short() { t.Skip() }
+    apiKey := os.Getenv("OPENAI_API_KEY")
+    llm := openai.New(apiKey, "gpt-4o-mini", "", 0.7, 512)
+    agent := domain.NewGenericAgent(testConfig, llm, native.New(nil))
+    result, err := agent.Execute(context.Background(), domain.Task{
+        ID:     "test-1",
+        Prompt: "Say hello in JSON: {\"output\": \"hello\"}",
+    })
+    require.NoError(t, err)
+    require.True(t, result.Completed)
+}
+```
 
 ## Observability
 
-- **Events** — `agent.loaded`, `agent.created`, `agent.removed`, `tool_call.<name>`, `auth.request`, `auth.success`, `auth.failure`
-- **Metrics** — per-agent task count, duration, error rate, tool call success rate
-- **Tracing** — Future: distributed trace across orchestrator → agent → tools
+### Prometheus Metrics (planned)
 
-## Comparison: Registered vs Unregistered Agents
+```go
+navi_agent_tasks_started_total{agent_id}   // counter
+navi_agent_task_duration_seconds{agent_id} // histogram
+```
 
-| Aspect | Registered Agent | Unregistered Agent |
-|--------|------------------|--------------------|
-| Exists in `agent_registry` | Yes | No |
-| `is_trusted = true` | Yes | No |
-| Can call privileged tools | After user auth | Never |
-| Can call unprivileged tools | Yes (within capabilities) | No |
-| Audit trail | Full (user_id, agent_id) | Minimal (alert only) |
-| UI visibility | Appears in agent list | Hidden; only seen in alerts |
+### Structured Logging (planned)
 
-## Future Considerations
+```go
+log.Info("task started",
+    zap.String("agent_id", a.ID()),
+    zap.String("task_id", taskID),
+)
+```
 
-- **Delegated sub-agents** — An agent may spawn a child agent with reduced capabilities
-- **Agent marketplace** — Signed agent packages that auto-register upon user approval
-- **Revocation** — Ability to mark an agent as `revoked` without deleting it
-- **Capability delegation** — Temporary grant of an extra capability for a single task (with auth)
+Levels: DEBUG (prompts), INFO (lifecycle), WARN (retries), ERROR (failures).
+
+## Performance
+
+| Resource | Typical | Notes |
+|---|---|---|
+| Memory per agent | ~100 KB | Prompt + config in-memory |
+| LLM call overhead | 0.5–30s | Depends on provider and model |
+| Docker startup | 500ms–2s | Use bubblewrap for <50ms |
+| Max concurrent | 5 (default) | Configurable via `max_concurrent` |
