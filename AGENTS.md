@@ -1,428 +1,146 @@
-# AGENTS.md - Guide for Working in the Navi Repository
+# Agents Architecture
 
-## Project Overview
+This document describes Navi's multi-agent system from an architectural perspective: how agents are defined, how they interact with the orchestrator, and the security model that governs them.
 
-**Navi** is an AI orchestrator built in Go with a hexagonal (ports & adapters) architecture. It provides secure, controllable AI agent execution with multiple isolation backends (Docker, Bubblewrap, native).
+## Core Principle: Configuration-Driven Agents
 
-- **Status**: Early prototype/POC - expect breaking changes
-- **Language**: Go 1.25+
-- **License**: MIT
+Unlike traditional systems where agent types are hard-coded, Navi treats **agents as data**. An agent is defined by two files:
 
-## Directory Structure
+- `config.toml` — declares capabilities, isolation backend, LLM settings
+- `AGENT.md` — system prompt that shapes the LLM's behavior
 
-Current state:
+The runtime provides a single `GenericAgent` implementation that reads these files and operates accordingly. This enables users to create, share, and modify agents without recompiling Navi.
 
-```
-navi/
-├── cmd/
-│   └── cli/              # CLI entry point (Cobra) - main.go currently empty
-│       └── main.go
-├── internal/             # Private application code - NOT YET CREATED
-│   ├── domain/           # Domain interfaces (ports)
-│   ├── adapters/         # External adapters (OpenAI, Docker, etc.)
-│   ├── orchestrator/     # Core coordination logic
-│   ├── agents/           # Agent implementations
-│   └── tui/              # Terminal UI
-├── configs/              # Configuration files (empty)
-├── tests/                # Test files (empty)
-├── docs/                 # Extensive documentation
-│   ├── architecture/overview.md
-│   ├── components/agents.md
-│   ├── components/isolation-adapters.md
-│   ├── getting-started.md
-│   ├── interfaces/index.md
-│   ├── security/model.md
-│   └── index.md
-├── go.mod               # Go module definition (minimal)
-├── go.sum               # Go module checksums
-├── README.md            # Project vision and roadmap
-├── CONTRIBUTING.md      # Contribution guidelines
-└── LICENSE              # MIT license
-```
+## Agent Identity & Trust
 
-Planned `internal/` structure (from docs):
+### Registration
 
-```
-internal/
-├── domain/                  # Ports (interfaces)
-│   ├── provider.go          # LLMPort
-│   ├── isolation.go         # IsolationPort
-│   ├── repository.go        # RepositoryPort
-│   └── auth.go              # AuthPort
-├── adapters/                # Adapter implementations
-│   ├── openai_adapter.go
-│   ├── anthropic_adapter.go
-│   ├── docker_adapter.go
-│   ├── bubblewrap_adapter.go
-│   └── native_adapter.go
-├── orchestrator/            # Core orchestrator
-│   ├── orchestrator.go
-│   ├── factory.go
-│   └── agency.go
-├── agents/                  # Agent implementations
-│   ├── planner/
-│   ├── researcher/
-│   ├── coder/
-│   ├── executor/
-│   ├── verifier/
-│   └── prompts/             # Text prompt files
-├── tui/                     # Terminal UI (Bubble Tea)
-│   └── tui.go
-├── api/                     # REST API (Chi)
-└── storage/                 # Database layer (SQLite)
-```
+Agents become **trusted** only after going through the **authenticated creation flow**:
 
-## Essential Commands
+1. User initiates agent creation via the TUI
+2. TUI prompts for authentication (password/biometric)
+3. Upon successful auth, TUI sends a `create_agent` tool call to the orchestrator
+4. Orchestrator writes the configuration files to `~/.config/navi/agents/<name>/`
+5. Orchestrator records the agent in the `agent_registry` table with `is_trusted = true`
+6. Orchestrator emits an `agent.created` event; TUI updates UI
 
-### Build
+Only agents in the registry with `is_trusted = true` are allowed to invoke privileged tools (file write, shell exec, create_agent, etc.).
 
-```bash
-# Build all packages
-go build ./...
+### Untrusted Agents
 
-# Build the CLI binary
-go build -o navi ./cmd/cli
+Any tool call bearing an `agent_id` that:
 
-# Install to GOPATH/bin
-go install ./cmd/cli
-```
+- Is not present in the `agent_registry`, OR
+- Has `is_trusted = false`
 
-### Test
+is rejected immediately and logged as `untrusted_agent` or `unregistered_agent`. The TUI may show an alert, allowing the user to register the agent if legitimate.
 
-```bash
-# Run all tests
-go test ./...
+This prevents:
+- Malicious external scripts from calling internal tools directly
+- Accidentally using an agent that was copied from elsewhere without registration
+- Unauthorized privilege escalation
 
-# Verbose
-go test -v ./...
+## Capability Model
 
-# With race detection
-go test -race ./...
+Agents operate under **capability-based authority**. The `config.toml` includes a `capabilities` list that grants specific permissions:
 
-# Integration tests (when they exist)
-go test -tags=integration ./...
+- `filesystem:/path:rw` — read/write access to a path
+- `network:host:port` — network access to host:port
+- `exec:binary1,binary2` — allowed executables
+- `vision`, `ocr`, `audio` — multimodal capabilities
 
-# E2E tests (requires Docker/bwrap)
-go test -tags=e2e ./...
-```
+These capabilities are **deny-by-default**. The orchestrator checks an agent's capabilities before:
+- Assigning a task (does the task require capabilities the agent lacks?)
+- Allowing a tool call (does the tool require a capability the agent lacks?)
 
-### Run
+Isolation adapters enforce capabilities at runtime (e.g., Docker volume mounts, seccomp filters).
 
-```bash
-# Run the CLI (once implemented)
-go run ./cmd/cli
+## Tool Calls & Authentication
 
-# After building:
-./navi
+Certain operations are exposed as **tools** that agents can invoke. Tools are not directly reachable by agents; they must be called via a structured `ToolCall` message to the orchestrator.
 
-# TUI mode (once implemented)
-go run ./cmd/cli tui
-./navi tui
+### Tool Categories
 
-# Start REST API server (once implemented)
-./navi serve --port 8080
-```
+1. **Unprivileged tools** — no user interaction needed (e.g., `file_read`, `http_get` if capability granted)
+2. **Privileged tools** — require user authentication before execution (e.g., `create_agent`, `file_write`, `shell_exec`)
 
-### Format & Lint
-
-```bash
-# Format code
-go fmt ./...
-
-# Vet for common issues
-go vet ./...
-
-# Lint (install: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest)
-golangci-lint run
-```
-
-### Dependency Management
-
-```bash
-# Download dependencies
-go mod download
-
-# Tidy go.mod/go.sum
-go mod tidy
-
-# Verify dependencies
-go mod verify
-
-# Add a dependency
-go get github.com/some/module
-go mod tidy
-```
-
-## Code Organization & Architecture
-
-### Hexagonal Architecture (Ports & Adapters)
-
-Navi follows **hexagonal architecture**. Core logic depends only on interfaces (ports); adapters implement ports for external services.
+### Auth Flow for Privileged Tools
 
 ```
-┌─────────────────────────────────────────────┐
-│                  ADAPTERS                   │
-│  (OpenAIAdapter, DockerAdapter, SQLiteRepo) │
-├─────────────────────────────────────────────┤
-│                CORE LOGIC                   │
-│        Depends only on:                     │
-│         - LLMPort                           │
-│         - IsolationPort                     │
-│         - RepositoryPort                    │
-├─────────────────────────────────────────────┤
-│                    PORTS                    │
-│ (Interfaces: LLMPort, IsolationPort, etc.)  │
-└─────────────────────────────────────────────┘
+Agent → Orchestrator: ToolCall{tool:"create_agent", args:{...}, request_id:"uuid"}
+
+Orchestrator:
+  - Verify agent is trusted (in registry)
+  - Check agent has capability for this tool
+  - Tool.RequiresAuth() == true → emit AuthRequest event with RequestID and description
+  → Block and wait
+
+TUI receives AuthRequest event → shows modal:
+  "Agent 'orchestrator' wants to: Create new agent 'research-2'"
+  [Authenticate] [Cancel]
+
+User enters password → TUI sends AuthResponse{RequestID, Credentials}
+
+Orchestrator:
+  - Verify credentials (against system or stored hash)
+  - If valid → proceed with Tool.Execute()
+  - If invalid → reject, log `auth_failed`
+  - Respond to agent with ToolResponse or Error
 ```
 
-Keep `internal/domain/` pure - no adapter-specific code. Adapters in `internal/adapters/` implement domain interfaces.
+### Replay Protection
 
-### Core Components (Planned)
+Every tool call includes a unique `request_id` (UUID v4). The orchestrator tracks recent IDs to prevent replay attacks. Once a `request_id` is used, it cannot be reused.
 
-1. **Orchestrator**: Coordinates agents, enforces security, audits.
-2. **Agency**: Multi-agent system:
-   - Planner (decomposition)
-   - Researcher (info gathering)
-   - Coder (code generation)
-   - Executor (tool execution)
-   - Verifier (validation)
-3. **Adapters**: LLM providers, isolation backends, storage, auth.
-4. **Entry Points**: CLI, TUI (Bubble Tea), REST API (Chi), bots.
+## Agent Communication
 
-### Data Flow (Intended)
+Agents do not communicate directly with each other. All messages go through the orchestrator:
 
-User → CLI/TUI/API → Auth → Orchestrator → Planner → [parallel agents] → Executor → Verifier → Result → Audit log.
+- Incoming: `AgentMessage{From:"agent-x", To:"agent-y", Type:"request", Payload:Task}`
+- Orchestrator validates that `agent-x` and `agent-y` exist and are trusted, then routes.
 
-Every operation: authenticate, check capabilities, sandboxed execution, log event.
+All messages are persisted to the event log for audit.
 
-## Naming Conventions
+## Lifecycle
 
-From `CONTRIBUTING.md` and Go idioms:
+1. **Startup** — Orchestrator scans `~/.config/navi/agents/*/config.toml`, instantiates `GenericAgent` for each, starts message loop goroutine
+2. **Task Assignment** — Orchestrator selects idle agent with required capabilities, sends `AgentMessage`
+3. **Execution** — Agent builds prompt from system + task, calls LLM, may invoke tools via orchestrator
+4. **Shutdown** — Context cancellation; all agent goroutines exit gracefully
 
-- Packages: lowercase, short, descriptive.
-- Exported: `CamelCase`; unexported: `camelCase`.
-- Interfaces: behavior names (`Reader`, `Writer`); `-er` suffix common.
-- Constructors: `New{Thing}(...)`.
-- Files: lowercase (`openai_adapter.go`).
-- Comments: exported items need full sentences, explain why.
+## Security Boundaries
 
-### Error Handling
+- **Capability boundary** — Agents cannot exceed declared capabilities; enforced by orchestrator and isolation adapters
+- **Authentication boundary** — Privileged tools require user presence; no passwordless elevation
+- **Registration boundary** — Only orchestrator can register agents, and only via authenticated TUI
+- **Isolation boundary** — Each agent's tool execution occurs in an isolated environment (Docker, Bubblewrap, or native sandbox)
 
-- Return `error`; avoid `panic()` in production.
-- Wrap with `%w`: `return fmt.Errorf("failed: %w", err)`.
-- Never swallow errors silently.
+## Persistence
 
-### Context Usage
+- **Agent Registry** — SQLite table `agent_registry` stores all trusted agents with metadata (registered_by, created_at, capabilities snapshot)
+- **Configuration** — `~/.config/navi/agents/<name>/config.toml` and `AGENT.md` (config as code)
+- **Event Log** — All agent actions, tool calls, auth events are recorded for audit and replay
 
-- Accept `context.Context` as first param.
-- Pass through all downstream calls.
-- Respect cancellation and deadlines.
+## Observability
 
-## Testing Strategy
+- **Events** — `agent.loaded`, `agent.created`, `agent.removed`, `tool_call.<name>`, `auth.request`, `auth.success`, `auth.failure`
+- **Metrics** — per-agent task count, duration, error rate, tool call success rate
+- **Tracing** — Future: distributed trace across orchestrator → agent → tools
 
-From `CONTRIBUTING.md`:
+## Comparison: Registered vs Unregistered Agents
 
-- Table-driven tests.
-- Mock dependencies via interfaces.
-- Use `testing.Short()` to skip integration tests.
-- Add benchmarks when relevant.
+| Aspect | Registered Agent | Unregistered Agent |
+|--------|------------------|--------------------|
+| Exists in `agent_registry` | Yes | No |
+| `is_trusted = true` | Yes | No |
+| Can call privileged tools | After user auth | Never |
+| Can call unprivileged tools | Yes (within capabilities) | No |
+| Audit trail | Full (user_id, agent_id) | Minimal (alert only) |
+| UI visibility | Appears in agent list | Hidden; only seen in alerts |
 
-Currently **no tests exist**. Add tests as features are built.
+## Future Considerations
 
-## Important Gotchas & Non-Obvious Patterns
-
-### 1. Early Development State
-
-- **POC**: Minimal code, many placeholders.
-- **Breaking changes**: Expect APIs to evolve.
-- **Planned directories missing**: `internal/` not yet created.
-- **Dependencies**: `go.mod` has no third-party deps yet; will be added incrementally.
-
-### 2. Security-First Mindset
-
-- **Security-sensitive**: AI execution with user data.
-- **Capability-based authority**: All operations must be explicitly granted.
-- **No secrets in source**: Use env vars or config with `0600`.
-- **Audit everything**: Every action logs an event.
-
-### 3. Hexagonal Discipline
-
-- Core (`domain`) depends only on interfaces.
-- Adapters implement interfaces; no core code in adapters.
-- Entry points depend on core, not directly on adapters.
-
-### 4. Capability Model
-
-- Explicit grants: filesystem paths, network hosts, exec binaries.
-- No implicit global access.
-- Adapters translate capabilities to backend config (Docker, bwrap, etc.).
-
-### 5. Agent Communication
-
-Messages via orchestrator:
-
-```go
-type AgentMessage struct {
-    From    string
-    To      string
-    Type    string // "request", "response", "event", "error"
-    Payload interface{}
-}
-```
-
-All messages persisted to event log.
-
-### 6. Isolation Backends
-
-| Backend   | Security | Performance | Platform    |
-|-----------|----------|-------------|-------------|
-| Docker    | High     | Medium      | Cross       |
-| Bubblewrap| High     | High        | Linux only  |
-| Native    | Medium   | Highest     | All         |
-
-Adapters enforce capabilities and provide `Execute`, `FileRead`, `FileWrite`.
-
-### 7. Configuration
-
-Config file locations (in order):
-1. `./navi.yaml`
-2. `~/.config/navi/config.yaml`
-3. `/etc/navi/config.yaml`
-
-Key env vars:
-- `NAVI_OPENAI_API_KEY`
-- `NAVI_ANTHROPIC_API_KEY`
-- `NAVI_DB_PATH`
-- `NAVI_LOG_LEVEL`
-- `NAVI_CONFIG`
-
-### 8. Event Sourcing
-
-All actions logged to SQLite (WAL). Schema:
-
-```sql
-CREATE TABLE event_log (
-    id TEXT PRIMARY KEY,
-    timestamp TEXT NOT NULL,
-    user_id TEXT NOT NULL,
-    agent_id TEXT,
-    action TEXT NOT NULL,
-    resource TEXT,
-    details TEXT,
-    result TEXT NOT NULL,
-    error TEXT,
-    git_commit TEXT,
-    INDEX idx_timestamp (timestamp),
-    INDEX idx_user_id (user_id),
-    INDEX idx_action (action)
-);
-```
-
-### 9. Git Integration
-
-Workspaces are git-tracked; changes auto-committed (when implemented). Enables rollback and audit.
-
-### 10. Parallelism
-
-Orchestrator runs independent agent tasks concurrently via goroutines, respecting dependencies.
-
-## Project-Specific Context from Docs
-
-Read the `docs/` files for detailed design:
-
-- `architecture/overview.md` - Hexagonal architecture, data flow, boundaries.
-- `components/agents.md` - Agent types, communication, lifecycle, prompts.
-- `components/isolation-adapters.md` - Backend configs, seccomp, performance.
-- `interfaces/index.md` - TUI, REST API, Discord, Telegram specs.
-- `security/model.md` - Threat model, capabilities, auth.
-- `getting-started.md` - Setup, config, run, debug.
-
-These are design documents; implementation may vary but should align.
-
-## Dependencies
-
-Current `go.mod`:
-
-```go
-module navi
-go 1.25.0
-```
-
-No third-party deps yet. As features are built, add via `go get` and `go mod tidy`.
-
-Expected future dependencies:
-- `github.com/spf13/cobra` (CLI)
-- `charm.land/bubbletea/v2` (TUI)
-- `github.com/go-chi/chi` (HTTP)
-- SQLite driver (`modernc.org/sqlite` or `mattn/go-sqlite3`)
-- `github.com/golang-jwt/jwt/v5` (JWT)
-- LLM provider SDKs.
-
-## Tools
-
-- **gopls**: `go install golang.org/x/tools/gopls@latest`
-- **golangci-lint**: `go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest`
-- **goimports**: `go install golang.org/x/tools/cmd/goimports@latest`
-
-Configure your editor to run `go fmt`/`goimports` on save.
-
-## Workflow (from CONTRIBUTING.md)
-
-1. Discuss changes in an issue first.
-2. Branch: `git checkout -b feat/description` (or `fix/`, `docs/`, `refactor/`, `test/`).
-3. Make small, focused changes with tests and documentation.
-4. Run: `go fmt ./...`, `go vet ./...`, `go test ./...`, `golangci-lint run`.
-5. Commit using [Conventional Commits](https://www.conventionalcommits.org/):
-   ```
-   feat(isolation): add Firecracker microVM adapter
-
-   - Implement FirecrackerAdapter with configurable VM size
-   - Add seccomp filter for syscall restriction
-
-   Closes #123
-   ```
-6. Push and open PR with clear description, screenshots for UI, testing steps.
-
-## Security Checklist
-
-When writing code:
-- [ ] All user input validated.
-- [ ] All operations capability-checked.
-- [ ] All external calls authenticated.
-- [ ] No secrets logged.
-- [ ] SQL queries parameterized.
-- [ ] Error messages don't leak data.
-- [ ] No `panic()` in production code.
-
-## Memory Files
-
-This section lists useful commands and conventions for agents (like you) working in this repo:
-
-- Build: `go build ./...`
-- Test: `go test ./...`
-- Format: `go fmt ./...`
-- Vet: `go vet ./...`
-- Run CLI: `go run ./cmd/cli`
-- Run TUI: `go run ./cmd/cli tui` (once implemented)
-- Download deps: `go mod download`
-- Tidy deps: `go mod tidy`
-- Lint: `golangci-lint run`
-
-## References
-
-- `README.md` - Vision, principles, roadmap.
-- `CONTRIBUTING.md` - Contribution guidelines, coding standards, testing.
-- `docs/architecture/overview.md` - Hexagonal architecture details.
-- `docs/security/model.md` - Full security model.
-- `docs/getting-started.md` - Setup, configuration, troubleshooting.
-- `docs/components/agents.md` - Multi-agent system design.
-- `docs/components/isolation-adapters.md` - Isolation backend specs.
-
-## Notes
-
-- This is a **community-driven, security-first** project. Build real utility, not hype.
-- The codebase is **early POC**. Much of the documented design is not yet implemented.
-- **Do not** introduce new architectural patterns without discussion. Follow hexagonal architecture as defined.
-- **Always** enforce capabilities; assume agents can malfunction or be malicious.
-- **Keep core pure**: No adapter-specific types in `internal/domain/`.
-- When in doubt, read the docs in `docs/` and ask in Discord (link in README).
+- **Delegated sub-agents** — An agent may spawn a child agent with reduced capabilities
+- **Agent marketplace** — Signed agent packages that auto-register upon user approval
+- **Revocation** — Ability to mark an agent as `revoked` without deleting it
+- **Capability delegation** — Temporary grant of an extra capability for a single task (with auth)
