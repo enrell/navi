@@ -1,4 +1,4 @@
-package types
+package domain
 
 import (
 	"time"
@@ -27,7 +27,7 @@ type Task struct {
 	ID        string
 	AgentID   AgentID
 	Prompt    string
-	Context   map[string]interface{}
+	Context   map[string]any
 	Priority  int
 	CreatedAt time.Time
 }
@@ -46,13 +46,13 @@ type TaskResult struct {
 type ToolCall struct {
 	RequestID string                 `json:"request_id"`
 	ToolName  string                 `json:"tool_name"`
-	Arguments map[string]interface{} `json:"arguments"`
+	Arguments map[string]any         `json:"arguments"`
 	AgentID   AgentID                `json:"agent_id"`
 }
 
 type ToolResponse struct {
 	RequestID string                 `json:"request_id"`
-	Result    map[string]interface{} `json:"result"`
+	Result    map[string]any         `json:"result"`
 	Error     string                 `json:"error"`
 }
 
@@ -82,5 +82,16 @@ type Event struct {
 	GitCommit      string                 `json:"git_commit,omitempty"`
 	Result         string                 `json:"result,omitempty"`
 	Error          string                 `json:"error,omitempty"`
-	Metadata       map[string]interface{} `json:"metadata,omitempty"`
+	Metadata       map[string]any         `json:"metadata,omitempty"`
 }
+
+type AgentRole string
+
+const (
+	RolePlanner    AgentRole = "planner"
+	RoleCoder      AgentRole = "coder"
+	RoleResearcher AgentRole = "researcher"
+	RoleExecutor   AgentRole = "executor"
+	RoleVerifier   AgentRole = "verifier"
+	RoleCustom     AgentRole = "custom"
+)

@@ -3,7 +3,8 @@ package tui
 import (
 	"context"
 	"fmt"
-	"navi/internal/orchestrator"
+	"navi/internal/core/ports"
+	"navi/internal/core/services/agency"
 	"os"
 	"os/signal"
 	"strings"
@@ -12,17 +13,14 @@ import (
 )
 
 type TUI struct {
-	orch   *orchestrator.SimpleOrchestrator
-	ctx    context.Context
-	cancel context.CancelFunc
+	agency   *agency.Agency
+	agentRepo ports.AgentRepository
 }
 
-func NewTUI(orch *orchestrator.SimpleOrchestrator) *TUI {
-	ctx, cancel := context.WithCancel(context.Background())
+func New(agency *agency.Agency, agentRepo ports.AgentRepository) *TUI {
 	return &TUI{
-		orch:   orch,
-		ctx:    ctx,
-		cancel: cancel,
+		agency:    agency,
+		agentRepo: agentRepo,
 	}
 }
 
@@ -35,13 +33,11 @@ func (t *TUI) Start() error {
 
 	for {
 		select {
-		case <-t.ctx.Done():
-			return nil
+		case <-ticker.C:
+			t.render()
 		case sig := <-sigCh:
 			fmt.Printf("\nReceived %v, shutting down...\n", sig)
 			return nil
-		case <-ticker.C:
-			t.render()
 		}
 	}
 }
@@ -52,7 +48,7 @@ func (t *TUI) render() {
 	fmt.Println("  NAVI - AI Orchestrator")
 	fmt.Println(strings.Repeat("=", 60))
 
-	agents := t.orch.ListAgents()
+	agents, _ := t.agentRepo.FindAll(context.Background())
 	if len(agents) == 0 {
 		fmt.Println("\n  No agents registered")
 	} else {
