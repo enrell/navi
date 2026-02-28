@@ -384,11 +384,11 @@ Navi is built around LLM weaknesses, not their strengths:
 
 ### Phase 1: Foundation (Current)
 - [x] Architecture design
-- [ ] Core interfaces defined
-- [ ] Threat model specification
-- [ ] Basic orchestrator implementation
-- [ ] First LLM adapter (OpenAI-compatible)
-- [ ] Isolation adapter interfaces
+- [x] Core interfaces defined
+- [x] Threat model specification
+- [x] Basic orchestrator implementation
+- [x] First LLM adapter (OpenAI-compatible)
+- [x] Isolation adapter interfaces
 
 ### Phase 2: Security & Isolation
 - [ ] Docker adapter
