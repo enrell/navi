@@ -8,6 +8,7 @@ import (
 
 	"navi/internal/core/domain"
 	"navi/internal/core/ports"
+	"navi/internal/core/services/capabilities"
 )
 
 type LLMFactory func(cfg domain.AgentConfig) (domain.LLMPort, error)
@@ -84,7 +85,8 @@ func (o *Orchestrator) startAgent(ctx context.Context, cfg domain.AgentConfig) e
 		return fmt.Errorf("create isolation for agent %s: %w", cfg.ID, err)
 	}
 
-	agent := domain.NewGenericAgent(cfg, llm, iso)
+	auth := capabilities.NewAuthorizer(cfg.Capabilities)
+	agent := domain.NewGenericAgent(cfg, llm, iso, auth)
 	agent.Start(ctx)
 	o.registry.Add(agent)
 

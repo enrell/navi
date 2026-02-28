@@ -89,7 +89,7 @@ func TestNewGenericAgent(t *testing.T) {
 	llm := &mockLLM{}
 	iso := &mockIsolation{}
 	cfg := testConfig()
-	agent := NewGenericAgent(cfg, llm, iso)
+	agent := NewGenericAgent(cfg, llm, iso, nil)
 
 	if agent == nil {
 		t.Fatal("NewGenericAgent returned nil")
@@ -234,7 +234,7 @@ func TestGenericAgent_Execute_NoLLM(t *testing.T) {
 
 func TestGenericAgent_Execute_JSONResponse(t *testing.T) {
 	llm := &mockLLM{response: `{"task_id":"t1","output":"done","success":true}`}
-	agent := NewGenericAgent(testConfig(), llm, nil)
+	agent := NewGenericAgent(testConfig(), llm, nil, nil)
 
 	result, err := agent.Execute(context.Background(), Task{ID: "t1", Prompt: "do it"})
 	if err != nil {
@@ -256,7 +256,7 @@ func TestGenericAgent_Execute_JSONResponse(t *testing.T) {
 
 func TestGenericAgent_Execute_RawResponse(t *testing.T) {
 	llm := &mockLLM{response: "just some text"}
-	agent := NewGenericAgent(testConfig(), llm, nil)
+	agent := NewGenericAgent(testConfig(), llm, nil, nil)
 
 	result, err := agent.Execute(context.Background(), Task{ID: "t1", Prompt: "do it"})
 	if err != nil {
@@ -272,7 +272,7 @@ func TestGenericAgent_Execute_RawResponse(t *testing.T) {
 
 func TestGenericAgent_Execute_LLMError(t *testing.T) {
 	llm := &mockLLM{err: errors.New("api down")}
-	agent := NewGenericAgent(testConfig(), llm, nil)
+	agent := NewGenericAgent(testConfig(), llm, nil, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -292,7 +292,7 @@ func TestGenericAgent_Execute_LLMError(t *testing.T) {
 func TestGenericAgent_Execute_WithFileChanges(t *testing.T) {
 	llm := &mockLLM{response: `{"task_id":"t1","output":"wrote file","success":true,"files":[{"path":"main.go","content":"package main"}]}`}
 	iso := &mockIsolation{}
-	agent := NewGenericAgent(testConfig(), llm, iso)
+	agent := NewGenericAgent(testConfig(), llm, iso, nil)
 
 	result, err := agent.Execute(context.Background(), Task{ID: "t1", Prompt: "create main.go"})
 	if err != nil {
@@ -312,7 +312,7 @@ func TestGenericAgent_Execute_WithFileChanges(t *testing.T) {
 func TestGenericAgent_Execute_FileWriteError(t *testing.T) {
 	llm := &mockLLM{response: `{"task_id":"t1","output":"ok","success":true,"files":[{"path":"bad.go","content":"x"}]}`}
 	iso := &mockIsolation{writeErr: errors.New("disk full")}
-	agent := NewGenericAgent(testConfig(), llm, iso)
+	agent := NewGenericAgent(testConfig(), llm, iso, nil)
 
 	_, err := agent.Execute(context.Background(), Task{ID: "t1", Prompt: "write file"})
 	if err == nil {
@@ -322,7 +322,7 @@ func TestGenericAgent_Execute_FileWriteError(t *testing.T) {
 
 func TestGenericAgent_Execute_JSONResponseWithError(t *testing.T) {
 	llm := &mockLLM{response: `{"task_id":"t1","output":"","success":false,"error":"compilation failed"}`}
-	agent := NewGenericAgent(testConfig(), llm, nil)
+	agent := NewGenericAgent(testConfig(), llm, nil, nil)
 
 	result, err := agent.Execute(context.Background(), Task{ID: "t1", Prompt: "build"})
 	if err != nil {
@@ -338,7 +338,7 @@ func TestGenericAgent_Execute_JSONResponseWithError(t *testing.T) {
 
 func TestGenericAgent_Execute_TimestampsSet(t *testing.T) {
 	llm := &mockLLM{response: "ok"}
-	agent := NewGenericAgent(testConfig(), llm, nil)
+	agent := NewGenericAgent(testConfig(), llm, nil, nil)
 
 	before := time.Now()
 	result, err := agent.Execute(context.Background(), Task{ID: "t1", Prompt: "time test"})
@@ -356,7 +356,7 @@ func TestGenericAgent_Execute_TimestampsSet(t *testing.T) {
 }
 
 func TestGenericAgent_CallTool_NoIsolation(t *testing.T) {
-	agent := NewGenericAgent(testConfig(), &mockLLM{}, nil)
+	agent := NewGenericAgent(testConfig(), &mockLLM{}, nil, nil)
 
 	resp, err := agent.CallTool(context.Background(), ToolCall{RequestID: "r1", ToolName: "echo"})
 	if err != nil {
@@ -369,7 +369,7 @@ func TestGenericAgent_CallTool_NoIsolation(t *testing.T) {
 
 func TestGenericAgent_CallTool_Success(t *testing.T) {
 	iso := &mockIsolation{execExit: 0, execStdout: "hello", execStderr: ""}
-	agent := NewGenericAgent(testConfig(), &mockLLM{}, iso)
+	agent := NewGenericAgent(testConfig(), &mockLLM{}, iso, nil)
 
 	resp, err := agent.CallTool(context.Background(), ToolCall{
 		RequestID: "r1",
@@ -389,7 +389,7 @@ func TestGenericAgent_CallTool_Success(t *testing.T) {
 
 func TestGenericAgent_CallTool_ExecError(t *testing.T) {
 	iso := &mockIsolation{execErr: errors.New("exec failed")}
-	agent := NewGenericAgent(testConfig(), &mockLLM{}, iso)
+	agent := NewGenericAgent(testConfig(), &mockLLM{}, iso, nil)
 
 	resp, err := agent.CallTool(context.Background(), ToolCall{RequestID: "r1", ToolName: "bad"})
 	if err != nil {
@@ -402,7 +402,7 @@ func TestGenericAgent_CallTool_ExecError(t *testing.T) {
 
 func TestGenericAgent_CallTool_NonStringArgs(t *testing.T) {
 	iso := &mockIsolation{execStdout: "ok"}
-	agent := NewGenericAgent(testConfig(), &mockLLM{}, iso)
+	agent := NewGenericAgent(testConfig(), &mockLLM{}, iso, nil)
 
 	resp, err := agent.CallTool(context.Background(), ToolCall{
 		RequestID: "r1",
@@ -419,7 +419,7 @@ func TestGenericAgent_CallTool_NonStringArgs(t *testing.T) {
 
 func TestGenericAgent_CallTool_NoArgs(t *testing.T) {
 	iso := &mockIsolation{execStdout: "ok"}
-	agent := NewGenericAgent(testConfig(), &mockLLM{}, iso)
+	agent := NewGenericAgent(testConfig(), &mockLLM{}, iso, nil)
 
 	resp, err := agent.CallTool(context.Background(), ToolCall{
 		RequestID: "r1",
@@ -444,7 +444,7 @@ func TestGenericAgent_BuildPrompt(t *testing.T) {
 
 func TestGenericAgent_LLMWithRetry_SuccessFirstTry(t *testing.T) {
 	llm := &mockLLM{response: "ok"}
-	agent := NewGenericAgent(testConfig(), llm, nil)
+	agent := NewGenericAgent(testConfig(), llm, nil, nil)
 
 	resp, err := agent.llmWithRetry(context.Background(), "prompt")
 	if err != nil {
@@ -460,7 +460,7 @@ func TestGenericAgent_LLMWithRetry_SuccessFirstTry(t *testing.T) {
 
 func TestGenericAgent_LLMWithRetry_MaxRetries(t *testing.T) {
 	llm := &mockLLM{err: errors.New("transient")}
-	agent := NewGenericAgent(testConfig(), llm, nil)
+	agent := NewGenericAgent(testConfig(), llm, nil, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -476,7 +476,7 @@ func TestGenericAgent_LLMWithRetry_MaxRetries(t *testing.T) {
 
 func TestGenericAgent_LLMWithRetry_ContextCancelled(t *testing.T) {
 	llm := &mockLLM{err: errors.New("transient")}
-	agent := NewGenericAgent(testConfig(), llm, nil)
+	agent := NewGenericAgent(testConfig(), llm, nil, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -489,7 +489,7 @@ func TestGenericAgent_LLMWithRetry_ContextCancelled(t *testing.T) {
 
 func TestGenericAgent_Lifecycle(t *testing.T) {
 	llm := &mockLLM{response: `{"task_id":"t1","output":"inbox-reply","success":true}`}
-	agent := NewGenericAgent(testConfig(), llm, nil)
+	agent := NewGenericAgent(testConfig(), llm, nil, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -523,7 +523,7 @@ func TestGenericAgent_Lifecycle(t *testing.T) {
 }
 
 func TestGenericAgent_RunLoop_SkipsNonRequest(t *testing.T) {
-	agent := NewGenericAgent(testConfig(), &mockLLM{response: "ok"}, nil)
+	agent := NewGenericAgent(testConfig(), &mockLLM{response: "ok"}, nil, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -545,7 +545,7 @@ func TestGenericAgent_RunLoop_SkipsNonRequest(t *testing.T) {
 }
 
 func TestGenericAgent_RunLoop_SkipsBadPayload(t *testing.T) {
-	agent := NewGenericAgent(testConfig(), &mockLLM{response: "ok"}, nil)
+	agent := NewGenericAgent(testConfig(), &mockLLM{response: "ok"}, nil, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -569,7 +569,7 @@ func TestGenericAgent_RunLoop_SkipsBadPayload(t *testing.T) {
 
 func TestGenericAgent_RunLoop_LLMError(t *testing.T) {
 	llm := &mockLLM{err: errors.New("api down")}
-	agent := NewGenericAgent(testConfig(), llm, nil)
+	agent := NewGenericAgent(testConfig(), llm, nil, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

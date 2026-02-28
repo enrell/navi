@@ -30,11 +30,18 @@ type IsolationPort interface {
 	Cleanup(ctx context.Context) error
 }
 
+type Authorizer interface {
+	CheckExec(binary string) error
+	CheckFilesystem(reqPath string, action string, workspacePath string) error
+	CheckNetwork(host, port string) error
+}
+
 type GenericAgent struct {
 	mu        sync.RWMutex
 	config    AgentConfig
 	llm       LLMPort
 	isolation IsolationPort
+	auth      Authorizer
 
 	inbox    chan AgentMessage
 	outbox   chan AgentMessage
@@ -43,18 +50,19 @@ type GenericAgent struct {
 	activeTasks int
 }
 
-func NewGenericAgent(config AgentConfig, llm LLMPort, isolation IsolationPort) *GenericAgent {
+func NewGenericAgent(config AgentConfig, llm LLMPort, isolation IsolationPort, auth Authorizer) *GenericAgent {
 	return &GenericAgent{
 		config:    config,
 		llm:       llm,
 		isolation: isolation,
+		auth:      auth,
 		inbox:     make(chan AgentMessage, 16),
 		outbox:    make(chan AgentMessage, 16),
 	}
 }
 
 func NewGenericAgentStub(config AgentConfig) *GenericAgent {
-	return NewGenericAgent(config, nil, nil)
+	return NewGenericAgent(config, nil, nil, nil)
 }
 
 func (g *GenericAgent) ID() AgentID         { return AgentID(g.config.ID) }
@@ -118,7 +126,24 @@ func (g *GenericAgent) Execute(ctx context.Context, task Task) (TaskResult, erro
 	}
 
 	if g.isolation != nil && len(result.Files) > 0 {
+		var wsPath string
+		if vp, ok := task.Context["workspace_path"]; ok {
+			wsPath, _ = vp.(string)
+		}
+
 		for _, f := range result.Files {
+			if g.auth != nil {
+				if authErr := g.auth.CheckFilesystem(f.Path, "write", wsPath); authErr != nil {
+					return TaskResult{
+						TaskID:      task.ID,
+						AgentID:     g.ID(),
+						Error:       fmt.Sprintf("access denied to %s: %v", f.Path, authErr),
+						StartedAt:   start,
+						CompletedAt: time.Now(),
+					}, authErr
+				}
+			}
+
 			if wErr := g.isolation.WriteFile(ctx, f.Path, f.Content); wErr != nil {
 				return TaskResult{
 					TaskID:      task.ID,
@@ -145,6 +170,11 @@ func (g *GenericAgent) Execute(ctx context.Context, task Task) (TaskResult, erro
 func (g *GenericAgent) CallTool(ctx context.Context, call ToolCall) (ToolResponse, error) {
 	if g.isolation == nil {
 		return ToolResponse{RequestID: call.RequestID, Error: "no isolation adapter"}, nil
+	}
+	if g.auth != nil {
+		if err := g.auth.CheckExec(call.ToolName); err != nil {
+			return ToolResponse{RequestID: call.RequestID, Error: err.Error()}, nil
+		}
 	}
 	args := make([]string, 0)
 	if v, ok := call.Arguments["args"]; ok {
