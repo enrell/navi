@@ -1,5 +1,3 @@
-// Package openai provides an LLMPort adapter for the OpenAI REST API.
-// It uses only the standard library (net/http) — no external SDK required.
 package openai
 
 import (
@@ -14,7 +12,6 @@ import (
 
 const defaultBaseURL = "https://api.openai.com/v1"
 
-// OpenAIAdapter implements ports.LLMPort using the OpenAI Chat Completions API.
 type OpenAIAdapter struct {
 	apiKey      string
 	model       string
@@ -24,7 +21,6 @@ type OpenAIAdapter struct {
 	client      *http.Client
 }
 
-// New creates an OpenAIAdapter. If baseURL is empty, the default OpenAI URL is used.
 func New(apiKey, model, baseURL string, temperature float64, maxTokens int) *OpenAIAdapter {
 	if baseURL == "" {
 		baseURL = defaultBaseURL
@@ -44,8 +40,6 @@ func New(apiKey, model, baseURL string, temperature float64, maxTokens int) *Ope
 		client:      &http.Client{Timeout: 120 * time.Second},
 	}
 }
-
-// ─── Request / Response types ────────────────────────────────────────────────
 
 type chatMessage struct {
 	Role    string `json:"role"`
@@ -72,9 +66,6 @@ type chatResponse struct {
 	} `json:"error,omitempty"`
 }
 
-// ─── LLMPort implementation ──────────────────────────────────────────────────
-
-// Generate sends a single prompt and returns the model's full response.
 func (a *OpenAIAdapter) Generate(ctx context.Context, prompt string) (string, error) {
 	reqBody := chatRequest{
 		Model: a.model,
@@ -122,10 +113,7 @@ func (a *OpenAIAdapter) Generate(ctx context.Context, prompt string) (string, er
 	return chatResp.Choices[0].Message.Content, nil
 }
 
-// Stream sends a prompt and calls chunk for each streamed token.
-// TODO: implement SSE parsing for streaming responses.
 func (a *OpenAIAdapter) Stream(ctx context.Context, prompt string, chunk func(string)) error {
-	// For now, fall back to non-streaming and emit as a single chunk.
 	result, err := a.Generate(ctx, prompt)
 	if err != nil {
 		return err
@@ -134,7 +122,6 @@ func (a *OpenAIAdapter) Stream(ctx context.Context, prompt string, chunk func(st
 	return nil
 }
 
-// Health checks connectivity to the OpenAI API.
 func (a *OpenAIAdapter) Health(ctx context.Context) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, a.baseURL+"/models", nil)
 	if err != nil {

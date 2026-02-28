@@ -8,9 +8,6 @@ import (
 	"time"
 )
 
-// ─── Agent Interface ──────────────────────────────────────────────────────────
-
-// Agent is the core interface all agent implementations must satisfy.
 type Agent interface {
 	ID() AgentID
 	Config() AgentConfig
@@ -21,15 +18,11 @@ type Agent interface {
 	CallTool(ctx context.Context, call ToolCall) (ToolResponse, error)
 }
 
-// LLMPort is the interface agents use to call an LLM.
-// The adapter layer (adapters/llm/*) provides concrete implementations.
 type LLMPort interface {
 	Generate(ctx context.Context, prompt string) (string, error)
 	Stream(ctx context.Context, prompt string, chunk func(string)) error
 }
 
-// IsolationPort is the security boundary through which agents run commands.
-// The adapter layer (adapters/isolation/*) provides concrete implementations.
 type IsolationPort interface {
 	Execute(ctx context.Context, cmd string, args []string, env map[string]string) (exitCode int, stdout, stderr string, err error)
 	ReadFile(ctx context.Context, path string) (string, error)
@@ -37,11 +30,6 @@ type IsolationPort interface {
 	Cleanup(ctx context.Context) error
 }
 
-// ─── GenericAgent ─────────────────────────────────────────────────────────────
-
-// GenericAgent is the single agent implementation in Navi.
-// Its behavior is entirely driven by its AgentConfig (config.toml + AGENT.md).
-// It holds an LLMPort and an IsolationPort injected at construction time.
 type GenericAgent struct {
 	mu        sync.RWMutex
 	config    AgentConfig
@@ -55,9 +43,6 @@ type GenericAgent struct {
 	activeTasks int
 }
 
-// NewGenericAgent creates a fully configured GenericAgent.
-// llm and isolation may be nil (the agent will return errors if used
-// without them); pass concrete adapters in production.
 func NewGenericAgent(config AgentConfig, llm LLMPort, isolation IsolationPort) *GenericAgent {
 	return &GenericAgent{
 		config:    config,
@@ -68,21 +53,15 @@ func NewGenericAgent(config AgentConfig, llm LLMPort, isolation IsolationPort) *
 	}
 }
 
-// NewGenericAgentStub creates a GenericAgent without LLM/isolation adapters.
-// Useful for registry-only operations (listing, persisting).
 func NewGenericAgentStub(config AgentConfig) *GenericAgent {
 	return NewGenericAgent(config, nil, nil)
 }
-
-// ─── Agent Interface Implementation ──────────────────────────────────────────
 
 func (g *GenericAgent) ID() AgentID         { return AgentID(g.config.ID) }
 func (g *GenericAgent) Config() AgentConfig { return g.config }
 func (g *GenericAgent) Role() AgentRole     { return RoleCustom }
 func (g *GenericAgent) IsTrusted() bool     { return true }
 
-// CanHandle returns true if the agent's capabilities are a superset of
-// the task's required capabilities.
 func (g *GenericAgent) CanHandle(task Task) bool {
 	if len(task.Requirements) == 0 {
 		return true
@@ -98,7 +77,6 @@ func (g *GenericAgent) CanHandle(task Task) bool {
 func (g *GenericAgent) hasCap(req Capability) bool {
 	for _, c := range g.config.Capabilities {
 		if c.Type == req.Type {
-			// Wildcard resource
 			if req.Resource == "" || req.Resource == "*" {
 				return true
 			}
@@ -110,11 +88,6 @@ func (g *GenericAgent) hasCap(req Capability) bool {
 	return false
 }
 
-// Execute runs a task synchronously:
-// 1. Build prompt = system prompt + task prompt
-// 2. Call LLM
-// 3. Parse JSON result
-// 4. Apply file changes via IsolationPort (if any)
 func (g *GenericAgent) Execute(ctx context.Context, task Task) (TaskResult, error) {
 	start := time.Now()
 
@@ -135,7 +108,6 @@ func (g *GenericAgent) Execute(ctx context.Context, task Task) (TaskResult, erro
 		}, err
 	}
 
-	// Try to parse as ResultPayload; fall back to raw output.
 	var result ResultPayload
 	if jsonErr := json.Unmarshal([]byte(resp), &result); jsonErr != nil {
 		result = ResultPayload{
@@ -145,7 +117,6 @@ func (g *GenericAgent) Execute(ctx context.Context, task Task) (TaskResult, erro
 		}
 	}
 
-	// Apply file changes via isolation if provided
 	if g.isolation != nil && len(result.Files) > 0 {
 		for _, f := range result.Files {
 			if wErr := g.isolation.WriteFile(ctx, f.Path, f.Content); wErr != nil {
@@ -171,7 +142,6 @@ func (g *GenericAgent) Execute(ctx context.Context, task Task) (TaskResult, erro
 	}, nil
 }
 
-// CallTool delegates a tool call through the IsolationPort.
 func (g *GenericAgent) CallTool(ctx context.Context, call ToolCall) (ToolResponse, error) {
 	if g.isolation == nil {
 		return ToolResponse{RequestID: call.RequestID, Error: "no isolation adapter"}, nil
@@ -196,28 +166,22 @@ func (g *GenericAgent) CallTool(ctx context.Context, call ToolCall) (ToolRespons
 	}, nil
 }
 
-// ─── Lifecycle ────────────────────────────────────────────────────────────────
-
-// Start begins the agent's inbox message-handling goroutine.
 func (g *GenericAgent) Start(ctx context.Context) {
 	ctx, cancel := context.WithCancel(ctx)
 	g.cancelFn = cancel
 	go g.runLoop(ctx)
 }
 
-// Stop signals the agent to stop processing.
 func (g *GenericAgent) Stop() {
 	if g.cancelFn != nil {
 		g.cancelFn()
 	}
 }
 
-// Outbox returns the channel where the agent sends response messages.
 func (g *GenericAgent) Outbox() <-chan AgentMessage {
 	return g.outbox
 }
 
-// Send delivers a message to the agent's inbox.
 func (g *GenericAgent) Send(msg AgentMessage) {
 	g.inbox <- msg
 }
@@ -261,8 +225,6 @@ func (g *GenericAgent) runLoop(ctx context.Context) {
 	}
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
 func (g *GenericAgent) buildPrompt(taskPrompt string) string {
 	return fmt.Sprintf("%s\n\n---\n\nTask:\n%s", g.config.SystemPrompt, taskPrompt)
 }
@@ -286,9 +248,6 @@ func (g *GenericAgent) llmWithRetry(ctx context.Context, prompt string) (string,
 	return "", fmt.Errorf("max retries exceeded: %w", err)
 }
 
-// ─── In-Memory Registry (used during boot before DB is ready) ─────────────────
-
-// InMemoryAgentRegistry holds live GenericAgent instances, keyed by AgentID.
 type InMemoryAgentRegistry struct {
 	mu     sync.RWMutex
 	agents map[AgentID]*GenericAgent
@@ -327,7 +286,6 @@ func (r *InMemoryAgentRegistry) List() []*GenericAgent {
 	return list
 }
 
-// FindIdle returns the first agent that can handle the given task.
 func (r *InMemoryAgentRegistry) FindIdle(task Task) (*GenericAgent, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

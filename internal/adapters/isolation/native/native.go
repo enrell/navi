@@ -1,6 +1,3 @@
-// Package native provides an IsolationPort that runs commands directly on the
-// host OS with no sandboxing. It should only be used for trusted, read-only
-// operations or in fully controlled environments.
 package native
 
 import (
@@ -12,10 +9,7 @@ import (
 	"path/filepath"
 )
 
-// NativeIsolation implements ports.IsolationPort by calling the OS directly.
 type NativeIsolation struct {
-	// AllowedPaths restricts WriteFile/ReadFile to these base directories.
-	// An empty slice means no restriction (dangerous).
 	AllowedPaths []string
 }
 
@@ -46,7 +40,7 @@ func (n *NativeIsolation) Execute(ctx context.Context, cmd string, args []string
 	return exitCode, stdout.String(), stderr.String(), nil
 }
 
-func (n *NativeIsolation) ReadFile(ctx context.Context, path string) (string, error) {
+func (n *NativeIsolation) ReadFile(_ context.Context, path string) (string, error) {
 	if err := n.checkPath(path); err != nil {
 		return "", err
 	}
@@ -57,7 +51,7 @@ func (n *NativeIsolation) ReadFile(ctx context.Context, path string) (string, er
 	return string(data), nil
 }
 
-func (n *NativeIsolation) WriteFile(ctx context.Context, path, content string) error {
+func (n *NativeIsolation) WriteFile(_ context.Context, path, content string) error {
 	if err := n.checkPath(path); err != nil {
 		return err
 	}

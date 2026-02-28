@@ -7,8 +7,6 @@ import (
 	"navi/internal/core/domain"
 )
 
-// Parse converts a slice of raw capability strings into typed Capability values.
-// It delegates to domain.ParseCapability and collects all errors.
 func Parse(rawCaps []string) ([]domain.Capability, error) {
 	caps := make([]domain.Capability, 0, len(rawCaps))
 	for _, s := range rawCaps {
@@ -21,8 +19,6 @@ func Parse(rawCaps []string) ([]domain.Capability, error) {
 	return caps, nil
 }
 
-// Satisfies reports whether agentCaps is a superset of required.
-// An empty required slice is always satisfied.
 func Satisfies(agentCaps, required []domain.Capability) bool {
 	for _, req := range required {
 		if !has(agentCaps, req) {
@@ -37,7 +33,6 @@ func has(caps []domain.Capability, req domain.Capability) bool {
 		if c.Type != req.Type {
 			continue
 		}
-		// Wildcard or exact resource match
 		if req.Resource == "" || req.Resource == "*" {
 			return true
 		}

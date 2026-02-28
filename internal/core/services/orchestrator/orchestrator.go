@@ -1,6 +1,3 @@
-// Package orchestrator is the central message bus of Navi.
-// It loads agents from the config registry, routes tasks to capable agents,
-// and emits events to the event log.
 package orchestrator
 
 import (
@@ -13,7 +10,9 @@ import (
 	"navi/internal/core/ports"
 )
 
-// Orchestrator manages the lifecycle of all GenericAgents and routes tasks.
+type LLMFactory func(cfg domain.AgentConfig) (domain.LLMPort, error)
+type IsolationFactory func(cfg domain.AgentConfig) (domain.IsolationPort, error)
+
 type Orchestrator struct {
 	mu       sync.RWMutex
 	registry *domain.InMemoryAgentRegistry
@@ -23,13 +22,6 @@ type Orchestrator struct {
 	isoFn    IsolationFactory
 }
 
-// LLMFactory creates an LLMPort adapter for a given AgentConfig.
-type LLMFactory func(cfg domain.AgentConfig) (domain.LLMPort, error)
-
-// IsolationFactory creates an IsolationPort adapter for a given AgentConfig.
-type IsolationFactory func(cfg domain.AgentConfig) (domain.IsolationPort, error)
-
-// New creates a new Orchestrator.
 func New(
 	cfgReg ports.AgentConfigRegistry,
 	eventLog ports.EventLog,
@@ -45,7 +37,6 @@ func New(
 	}
 }
 
-// Start loads all agents from the config registry and starts them.
 func (o *Orchestrator) Start(ctx context.Context) error {
 	configs, err := o.cfgReg.LoadAll()
 	if err != nil {
@@ -54,7 +45,6 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 
 	for _, cfg := range configs {
 		if err := o.startAgent(ctx, cfg); err != nil {
-			// Log but don't abort — other agents should still start.
 			_ = o.eventLog.Record(ctx, domain.Event{
 				ID:        fmt.Sprintf("evt-err-%s-%d", cfg.ID, time.Now().UnixNano()),
 				Timestamp: time.Now(),
@@ -68,8 +58,6 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 	return nil
 }
 
-// RegisterAgent dynamically adds a new agent at runtime.
-// It persists the config to disk and starts the agent immediately.
 func (o *Orchestrator) RegisterAgent(ctx context.Context, cfg domain.AgentConfig) error {
 	if err := o.cfgReg.Save(cfg); err != nil {
 		return fmt.Errorf("orchestrator: save config: %w", err)
@@ -109,7 +97,6 @@ func (o *Orchestrator) startAgent(ctx context.Context, cfg domain.AgentConfig) e
 	})
 }
 
-// Submit routes a task to an idle capable agent and executes it.
 func (o *Orchestrator) Submit(ctx context.Context, task domain.Task) (domain.TaskResult, error) {
 	agent, ok := o.registry.FindIdle(task)
 	if !ok {
@@ -126,13 +113,12 @@ func (o *Orchestrator) Submit(ctx context.Context, task domain.Task) (domain.Tas
 
 	result, err := agent.Execute(ctx, task)
 
-	evtType := domain.EventTaskCompleted
 	evt := domain.Event{
 		ID:        fmt.Sprintf("evt-done-%s-%d", task.ID, time.Now().UnixNano()),
 		Timestamp: time.Now(),
 		AgentID:   agent.ID(),
 		UserID:    "system",
-		Type:      evtType,
+		Type:      domain.EventTaskCompleted,
 		Result:    result.Output,
 	}
 	if err != nil {
@@ -143,19 +129,16 @@ func (o *Orchestrator) Submit(ctx context.Context, task domain.Task) (domain.Tas
 	return result, err
 }
 
-// Shutdown stops all agents gracefully.
 func (o *Orchestrator) Shutdown() {
 	for _, agent := range o.registry.List() {
 		agent.Stop()
 	}
 }
 
-// ListAgents returns all registered agents.
 func (o *Orchestrator) ListAgents() []*domain.GenericAgent {
 	return o.registry.List()
 }
 
-// RemoveAgent stops and removes an agent by ID.
 func (o *Orchestrator) RemoveAgent(ctx context.Context, id domain.AgentID) error {
 	agent, ok := o.registry.Get(id)
 	if !ok {

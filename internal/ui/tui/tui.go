@@ -14,7 +14,6 @@ import (
 	"navi/internal/core/services/orchestrator"
 )
 
-// TUI is the terminal dashboard for Navi.
 type TUI struct {
 	orch      *orchestrator.Orchestrator
 	agentRepo ports.AgentRepository
@@ -24,7 +23,6 @@ func New(orch *orchestrator.Orchestrator, agentRepo ports.AgentRepository) *TUI 
 	return &TUI{orch: orch, agentRepo: agentRepo}
 }
 
-// Start runs the TUI render loop until ctx is cancelled or SIGINT/SIGTERM.
 func (t *TUI) Start(ctx context.Context) error {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -49,7 +47,6 @@ func (t *TUI) Start(ctx context.Context) error {
 }
 
 func (t *TUI) render() {
-	// Clear screen
 	fmt.Print("\033[H\033[2J")
 	width := 64
 
@@ -66,7 +63,6 @@ func (t *TUI) render() {
 
 	agents := t.orch.ListAgents()
 	if len(agents) == 0 {
-		// Fall back to persisted agents from DB
 		dbAgents, _ := t.agentRepo.FindAll(context.Background())
 		if len(dbAgents) == 0 {
 			line("  No agents loaded. Run: navi agent create")

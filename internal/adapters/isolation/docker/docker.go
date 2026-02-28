@@ -1,5 +1,3 @@
-// Package docker provides an IsolationPort backed by Docker containers.
-// Each agent task runs in an isolated container with controlled mounts.
 package docker
 
 import (
@@ -7,15 +5,13 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
-	"strings"
 )
 
-// DockerIsolation implements ports.IsolationPort using `docker run`.
 type DockerIsolation struct {
 	Image       string
-	MemoryLimit string // e.g. "512m"
-	CPUQuota    string // e.g. "0.5"
-	WorkDir     string // host path to mount as /workspace
+	MemoryLimit string
+	CPUQuota    string
+	WorkDir     string
 }
 
 func New(image, workDir string) *DockerIsolation {
@@ -28,7 +24,6 @@ func New(image, workDir string) *DockerIsolation {
 
 func (d *DockerIsolation) Execute(ctx context.Context, cmd string, args []string, env map[string]string) (int, string, string, error) {
 	dockerArgs := d.baseArgs()
-	// Pass env vars
 	for k, v := range env {
 		dockerArgs = append(dockerArgs, "-e", fmt.Sprintf("%s=%s", k, v))
 	}
@@ -60,16 +55,11 @@ func (d *DockerIsolation) ReadFile(ctx context.Context, path string) (string, er
 }
 
 func (d *DockerIsolation) WriteFile(ctx context.Context, path, content string) error {
-	// Use docker cp: write to a temp container
-	// TODO: implement via `docker run --rm -i <image> tee <path>` with stdin
 	_, _, _, err := d.Execute(ctx, "sh", []string{"-c", fmt.Sprintf("mkdir -p $(dirname %s) && cat > %s", path, path)}, nil)
 	return err
 }
 
-func (d *DockerIsolation) Cleanup(ctx context.Context) error {
-	// Containers are ephemeral (--rm), nothing to clean.
-	return nil
-}
+func (d *DockerIsolation) Cleanup(_ context.Context) error { return nil }
 
 func (d *DockerIsolation) baseArgs() []string {
 	args := []string{"run", "--rm", "--network=none"}
@@ -79,6 +69,5 @@ func (d *DockerIsolation) baseArgs() []string {
 	if d.WorkDir != "" {
 		args = append(args, "-v", d.WorkDir+":/workspace", "-w", "/workspace")
 	}
-	_ = strings.Join(args, " ") // satisfy strings import
 	return args
 }

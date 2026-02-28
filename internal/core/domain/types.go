@@ -6,28 +6,14 @@ import (
 	"time"
 )
 
-// ─── Identifiers ────────────────────────────────────────────────────────────
-
 type AgentID string
 
-// ─── Capabilities ────────────────────────────────────────────────────────────
-
-// Capability represents a fine-grained permission string.
-// Raw format examples:
-//
-//	"filesystem:workspace:rw"
-//	"exec:bash,go,git"
-//	"network:api.github.com:443"
-//	"tool:mcp-name"
-//	"vision"
-//	"ocr:tesseract"
 type Capability struct {
-	Type     string // "filesystem", "exec", "network", "tool", "vision", "ocr", "audio"
-	Resource string // path, host, binary list, tool name, engine, mode
-	Mode     string // "ro", "rw", port, or empty
+	Type     string
+	Resource string
+	Mode     string
 }
 
-// Raw returns the capability as its normalized string form.
 func (c Capability) Raw() string {
 	parts := []string{c.Type}
 	if c.Resource != "" {
@@ -39,7 +25,6 @@ func (c Capability) Raw() string {
 	return strings.Join(parts, ":")
 }
 
-// ParseCapability converts a raw capability string into a Capability struct.
 func ParseCapability(s string) (Capability, error) {
 	parts := strings.SplitN(s, ":", 3)
 	if len(parts) == 0 || parts[0] == "" {
@@ -55,22 +40,15 @@ func ParseCapability(s string) (Capability, error) {
 	return cap, nil
 }
 
-// ─── Agent Configuration ─────────────────────────────────────────────────────
-
-// AgentConfig is the in-memory representation of a loaded agent.
-// It is populated from config.toml + AGENT.md on disk.
 type AgentConfig struct {
-	// Identity
-	ID          string // unique, must match directory name
-	Name        string // human-readable label (may equal ID)
+	ID          string
+	Name        string
 	Description string
-	Type        string // always "generic" for now
+	Type        string
 
-	// Prompt
-	PromptFile   string // filename of AGENT.md (relative to agent dir)
-	SystemPrompt string // loaded content of PromptFile
+	PromptFile   string
+	SystemPrompt string
 
-	// LLM
 	LLMProvider    string
 	LLMModel       string
 	LLMAPIKey      string
@@ -78,64 +56,53 @@ type AgentConfig struct {
 	LLMTemperature float64
 	LLMMaxTokens   int
 
-	// Capabilities & isolation
 	Capabilities    []Capability
-	IsolationType   string // "docker", "bubblewrap", "native"
+	IsolationType   string
 	IsolationConfig map[string]string
 
-	// Limits
 	Timeout       time.Duration
 	MaxConcurrent int
 }
 
-// ─── Agent Messages ───────────────────────────────────────────────────────────
-
-// AgentMessage is the envelope for all orchestrator<->agent communication.
 type AgentMessage struct {
 	From    AgentID
 	To      AgentID
-	Type    string      // "request", "response", "event", "error"
-	Payload interface{} // TaskPayload | ResultPayload
+	Type    string
+	Payload interface{}
 }
 
-// TaskPayload is sent from the orchestrator to an agent.
 type TaskPayload struct {
 	TaskID      string
 	Description string
 	Context     TaskContext
 }
 
-// ResultPayload is sent from an agent back to the orchestrator.
 type ResultPayload struct {
-	TaskID  string         `json:"task_id"`
-	Output  string         `json:"output"`
-	Files   []FileChange   `json:"files,omitempty"`
-	Error   string         `json:"error,omitempty"`
-	Success bool           `json:"success"`
+	TaskID  string       `json:"task_id"`
+	Output  string       `json:"output"`
+	Files   []FileChange `json:"files,omitempty"`
+	Error   string       `json:"error,omitempty"`
+	Success bool         `json:"success"`
 }
 
-// FileChange represents a file that the agent wants to create/modify.
 type FileChange struct {
 	Path    string `json:"path"`
 	Content string `json:"content"`
 }
 
-// TaskContext carries per-task context passed to the agent.
 type TaskContext struct {
-	TaskID       string
-	Goal         string
+	TaskID        string
+	Goal          string
 	WorkspacePath string
-	Capabilities []Capability
-	History      []AgentMessage
+	Capabilities  []Capability
+	History       []AgentMessage
 }
-
-// ─── Tasks ────────────────────────────────────────────────────────────────────
 
 type Task struct {
 	ID           string
-	AgentID      AgentID // optional: direct routing
+	AgentID      AgentID
 	Prompt       string
-	Requirements []Capability // capabilities required to handle this task
+	Requirements []Capability
 	Context      map[string]any
 	Priority     int
 	CreatedAt    time.Time
@@ -152,8 +119,6 @@ type TaskResult struct {
 	CompletedAt time.Time
 }
 
-// ─── Tool Calls ───────────────────────────────────────────────────────────────
-
 type ToolCall struct {
 	RequestID string         `json:"request_id"`
 	ToolName  string         `json:"tool_name"`
@@ -166,8 +131,6 @@ type ToolResponse struct {
 	Result    map[string]any `json:"result"`
 	Error     string         `json:"error"`
 }
-
-// ─── Events ───────────────────────────────────────────────────────────────────
 
 type EventType string
 
@@ -197,8 +160,6 @@ type Event struct {
 	Error         string         `json:"error,omitempty"`
 	Metadata      map[string]any `json:"metadata,omitempty"`
 }
-
-// ─── Roles (legacy, kept for compatibility) ───────────────────────────────────
 
 type AgentRole string
 

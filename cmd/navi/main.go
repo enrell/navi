@@ -27,7 +27,6 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	// ── Storage ────────────────────────────────────────────────────────────────
 	home, err := os.UserHomeDir()
 	if err != nil {
 		fatalf("cannot get home dir: %v", err)
@@ -38,19 +37,17 @@ func main() {
 		fatalf("cannot create db dir: %v", err)
 	}
 
-	sqliteRepo, err := sqlite.NewSQLiteRepository("file:" + dbPath + "?cache=shared&_journal_mode=WAL")
+	sqliteRepo, err := sqlite.NewSQLiteRepository(dbPath)
 	if err != nil {
 		fatalf("cannot init sqlite: %v", err)
 	}
 
-	// ── Config Registry ────────────────────────────────────────────────────────
 	agentsDir := filepath.Join(home, ".config", "navi", "agents")
 	cfgReg, err := localfs.New(agentsDir)
 	if err != nil {
 		fatalf("cannot init config registry: %v", err)
 	}
 
-	// ── Adapter Factories ──────────────────────────────────────────────────────
 	llmFactory := func(cfg domain.AgentConfig) (domain.LLMPort, error) {
 		apiKey := cfg.LLMAPIKey
 		if apiKey == "" {
@@ -60,7 +57,6 @@ func main() {
 		case "openai", "":
 			return openai.New(apiKey, cfg.LLMModel, cfg.LLMBaseURL, cfg.LLMTemperature, cfg.LLMMaxTokens), nil
 		default:
-			// Fallback: treat as OpenAI-compatible endpoint (Ollama, Together, etc.)
 			return openai.New(apiKey, cfg.LLMModel, cfg.LLMBaseURL, cfg.LLMTemperature, cfg.LLMMaxTokens), nil
 		}
 	}
@@ -77,16 +73,14 @@ func main() {
 			return docker.New(image, workspaceDir), nil
 		case "bubblewrap", "bwrap":
 			return bubblewrap.New(workspaceDir), nil
-		default: // "native"
+		default:
 			allowedPaths := []string{workspaceDir}
 			return native.New(allowedPaths), nil
 		}
 	}
 
-	// ── Orchestrator ───────────────────────────────────────────────────────────
 	orch := orchestrator.New(cfgReg, sqliteRepo, llmFactory, isoFactory)
 
-	// ── CLI Dispatch ───────────────────────────────────────────────────────────
 	args := os.Args[1:]
 
 	if len(args) >= 2 && args[0] == "agent" && args[1] == "create" {
@@ -104,7 +98,6 @@ func main() {
 		return
 	}
 
-	// Default: start TUI
 	if err := orch.Start(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "[warn] orchestrator start: %v\n", err)
 	}
@@ -116,8 +109,6 @@ func main() {
 		fatalf("TUI error: %v", err)
 	}
 }
-
-// ─── CLI Commands ─────────────────────────────────────────────────────────────
 
 func runAgentCreate(ctx context.Context, orch *orchestrator.Orchestrator) {
 	sc := bufio.NewScanner(os.Stdin)

@@ -3,21 +3,21 @@ package sqlite
 import (
 	"context"
 	"fmt"
-	"navi/internal/core/domain"
-	"navi/internal/core/ports"
 	"strings"
 	"time"
 
-	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
+
+	"github.com/glebarez/sqlite"
+
+	"navi/internal/core/domain"
+	"navi/internal/core/ports"
 )
 
 type SQLiteRepository struct {
 	db *gorm.DB
 }
-
-// ─── GORM Models ──────────────────────────────────────────────────────────────
 
 type AgentRecord struct {
 	ID            string `gorm:"primaryKey"`
@@ -25,7 +25,7 @@ type AgentRecord struct {
 	SystemPrompt  string `gorm:"not null"`
 	Role          string `gorm:"not null"`
 	Trusted       bool   `gorm:"not null"`
-	Capabilities  string // comma-joined raw capability strings
+	Capabilities  string
 	IsolationType string
 	LLMProvider   string
 	LLMModel      string
@@ -52,8 +52,6 @@ type EventRecord struct {
 
 func (EventRecord) TableName() string { return "events" }
 
-// ─── Constructor ──────────────────────────────────────────────────────────────
-
 func NewSQLiteRepository(dsn string) (*SQLiteRepository, error) {
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
@@ -74,8 +72,6 @@ func (r *SQLiteRepository) Close() error {
 	}
 	return sqlDB.Close()
 }
-
-// ─── AgentRepository ─────────────────────────────────────────────────────────
 
 func (r *SQLiteRepository) Save(ctx context.Context, agent domain.Agent) error {
 	cfg := agent.Config()
@@ -149,8 +145,6 @@ func recordToConfig(rec AgentRecord) domain.AgentConfig {
 	return cfg
 }
 
-// ─── EventLog ─────────────────────────────────────────────────────────────────
-
 func (r *SQLiteRepository) Record(ctx context.Context, event domain.Event) error {
 	return r.saveEvent(ctx, event)
 }
@@ -159,14 +153,11 @@ func (r *SQLiteRepository) Query(ctx context.Context, filter ports.EventFilter) 
 	return r.findAllEvents(ctx, filter)
 }
 
-func (r *SQLiteRepository) Subscribe(ctx context.Context, eventTypes []domain.EventType) (<-chan domain.Event, error) {
-	// TODO: implement real pub/sub (polling or SQLite triggers)
+func (r *SQLiteRepository) Subscribe(_ context.Context, _ []domain.EventType) (<-chan domain.Event, error) {
 	ch := make(chan domain.Event)
 	close(ch)
 	return ch, nil
 }
-
-// ─── EventRepository ─────────────────────────────────────────────────────────
 
 func (r *SQLiteRepository) saveEvent(ctx context.Context, event domain.Event) error {
 	rec := EventRecord{

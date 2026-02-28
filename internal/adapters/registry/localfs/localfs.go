@@ -1,5 +1,3 @@
-// Package localfs implements ports.AgentConfigRegistry by scanning
-// ~/.config/navi/agents/*/ directories on the local filesystem.
 package localfs
 
 import (
@@ -12,13 +10,10 @@ import (
 	"navi/internal/core/domain"
 )
 
-// LocalFSRegistry reads and writes agent configs from the filesystem.
 type LocalFSRegistry struct {
-	baseDir string // e.g. ~/.config/navi/agents
+	baseDir string
 }
 
-// New creates a LocalFSRegistry rooted at baseDir.
-// If baseDir is empty, it defaults to ~/.config/navi/agents.
 func New(baseDir string) (*LocalFSRegistry, error) {
 	if baseDir == "" {
 		home, err := os.UserHomeDir()
@@ -33,8 +28,6 @@ func New(baseDir string) (*LocalFSRegistry, error) {
 	return &LocalFSRegistry{baseDir: baseDir}, nil
 }
 
-// LoadAll scans baseDir for subdirectories containing config.toml and
-// returns the parsed AgentConfig for each valid agent directory.
 func (r *LocalFSRegistry) LoadAll() ([]domain.AgentConfig, error) {
 	entries, err := os.ReadDir(r.baseDir)
 	if err != nil {
@@ -52,7 +45,6 @@ func (r *LocalFSRegistry) LoadAll() ([]domain.AgentConfig, error) {
 		dir := filepath.Join(r.baseDir, entry.Name())
 		cfg, err := domain.LoadAgentConfig(dir)
 		if err != nil {
-			// Warn but skip invalid configs
 			fmt.Fprintf(os.Stderr, "[navi] skipping agent %q: %v\n", entry.Name(), err)
 			continue
 		}
@@ -61,8 +53,6 @@ func (r *LocalFSRegistry) LoadAll() ([]domain.AgentConfig, error) {
 	return configs, nil
 }
 
-// Save writes config.toml and AGENT.md for the given AgentConfig.
-// It creates the agent directory if it doesn't exist.
 func (r *LocalFSRegistry) Save(cfg domain.AgentConfig) error {
 	if cfg.ID == "" {
 		return fmt.Errorf("localfs: agent config missing ID")
@@ -72,19 +62,16 @@ func (r *LocalFSRegistry) Save(cfg domain.AgentConfig) error {
 		return fmt.Errorf("localfs: create agent dir: %w", err)
 	}
 
-	// Determine prompt filename
 	promptFile := cfg.PromptFile
 	if promptFile == "" {
 		promptFile = "AGENT.md"
 	}
 
-	// Serialize capabilities back to strings
 	rawCaps := make([]string, len(cfg.Capabilities))
 	for i, c := range cfg.Capabilities {
 		rawCaps[i] = c.Raw()
 	}
 
-	// Build TOML-serializable struct
 	type llmSection struct {
 		Provider    string  `toml:"provider"`
 		Model       string  `toml:"model"`
@@ -128,7 +115,6 @@ func (r *LocalFSRegistry) Save(cfg domain.AgentConfig) error {
 		raw.Timeout = cfg.Timeout.String()
 	}
 
-	// Write config.toml
 	cfgPath := filepath.Join(agentDir, "config.toml")
 	f, err := os.Create(cfgPath)
 	if err != nil {
@@ -139,7 +125,6 @@ func (r *LocalFSRegistry) Save(cfg domain.AgentConfig) error {
 		return fmt.Errorf("localfs: encode config.toml: %w", err)
 	}
 
-	// Write AGENT.md (system prompt)
 	promptPath := filepath.Join(agentDir, promptFile)
 	if err := os.WriteFile(promptPath, []byte(cfg.SystemPrompt), 0644); err != nil {
 		return fmt.Errorf("localfs: write AGENT.md: %w", err)
@@ -147,7 +132,6 @@ func (r *LocalFSRegistry) Save(cfg domain.AgentConfig) error {
 	return nil
 }
 
-// Delete removes the entire agent directory.
 func (r *LocalFSRegistry) Delete(id string) error {
 	if id == "" {
 		return fmt.Errorf("localfs: empty agent ID")

@@ -9,10 +9,6 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-// ─── TOML Schema ─────────────────────────────────────────────────────────────
-
-// agentConfigFile mirrors the on-disk config.toml structure exactly.
-// All fields are exported so the TOML decoder can populate them.
 type agentConfigFile struct {
 	ID          string `toml:"id"`
 	Type        string `toml:"type"`
@@ -35,10 +31,6 @@ type agentConfigFile struct {
 	MaxConcurrent   int               `toml:"max_concurrent"`
 }
 
-// ─── Loader ───────────────────────────────────────────────────────────────────
-
-// LoadAgentConfig reads config.toml and the referenced AGENT.md from the
-// given agent directory and returns a fully-populated AgentConfig.
 func LoadAgentConfig(dir string) (AgentConfig, error) {
 	cfgPath := filepath.Join(dir, "config.toml")
 
@@ -57,14 +49,12 @@ func LoadAgentConfig(dir string) (AgentConfig, error) {
 		return AgentConfig{}, fmt.Errorf("%s: field 'prompt' is required", cfgPath)
 	}
 
-	// Read system prompt file
 	promptPath := filepath.Join(dir, raw.Prompt)
 	promptBytes, err := os.ReadFile(promptPath)
 	if err != nil {
 		return AgentConfig{}, fmt.Errorf("read prompt file %s: %w", promptPath, err)
 	}
 
-	// Parse capabilities
 	caps := make([]Capability, 0, len(raw.Capabilities))
 	for _, s := range raw.Capabilities {
 		c, err := ParseCapability(s)
@@ -74,7 +64,6 @@ func LoadAgentConfig(dir string) (AgentConfig, error) {
 		caps = append(caps, c)
 	}
 
-	// Parse timeout
 	var timeout time.Duration
 	if raw.Timeout != "" {
 		timeout, err = time.ParseDuration(raw.Timeout)
@@ -110,7 +99,7 @@ func LoadAgentConfig(dir string) (AgentConfig, error) {
 		isolation = "native"
 	}
 
-	cfg := AgentConfig{
+	return AgentConfig{
 		ID:              raw.ID,
 		Name:            raw.ID,
 		Description:     raw.Description,
@@ -128,7 +117,5 @@ func LoadAgentConfig(dir string) (AgentConfig, error) {
 		IsolationConfig: raw.IsolationConfig,
 		Timeout:         timeout,
 		MaxConcurrent:   maxConcurrent,
-	}
-
-	return cfg, nil
+	}, nil
 }
