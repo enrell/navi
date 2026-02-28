@@ -393,9 +393,9 @@ Navi is built around LLM weaknesses, not their strengths:
 ### Phase 2: Security & Isolation
 - [ ] Docker adapter
 - [ ] Bubblewrap adapter (Linux)
-- [ ] Native restricted sandbox
-- [ ] Capability-based authority system
-- [ ] Git integration for audit trail
+- [x] Native restricted sandbox
+- [x] Capability-based authority system
+- [x] Git integration for audit trail
 
 ### Phase 3: Agent System
 - [ ] Multi-agent coordination
