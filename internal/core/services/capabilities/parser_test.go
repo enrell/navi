@@ -55,4 +55,51 @@ func TestSatisfies(t *testing.T) {
 	if capabilities.Satisfies(agentCaps, missing) {
 		t.Error("expected Satisfies to return false for missing cap")
 	}
+
+	wrongResource := []domain.Capability{
+		{Type: "filesystem", Resource: "other-workspace"},
+	}
+	if capabilities.Satisfies(agentCaps, wrongResource) {
+		t.Error("expected Satisfies to return false for wrong resource")
+	}
+
+	wildcardReq := []domain.Capability{
+		{Type: "filesystem", Resource: "*"},
+	}
+	if !capabilities.Satisfies(agentCaps, wildcardReq) {
+		t.Error("expected true when requirement resource is wildcard")
+	}
+
+	emptyReqResource := []domain.Capability{
+		{Type: "filesystem", Resource: ""},
+	}
+	if !capabilities.Satisfies(agentCaps, emptyReqResource) {
+		t.Error("expected true when requirement resource is empty string")
+	}
+
+	caseInsensitiveReq := []domain.Capability{
+		{Type: "network", Resource: "API.GITHUB.COM"},
+	}
+	if !capabilities.Satisfies(agentCaps, caseInsensitiveReq) {
+		t.Error("expected true when requirement resource matches case-insensitively")
+	}
+}
+
+func TestSatisfies_AgentHasWildcard(t *testing.T) {
+	agentCaps := []domain.Capability{
+		{Type: "network", Resource: "*"},
+	}
+	required := []domain.Capability{
+		{Type: "network", Resource: "api.github.com"},
+	}
+	if !capabilities.Satisfies(agentCaps, required) {
+		t.Error("expected true when agent has wildcard resource")
+	}
+}
+
+func TestParse_Error(t *testing.T) {
+	_, err := capabilities.Parse([]string{""})
+	if err == nil {
+		t.Error("expected error for invalid capability string")
+	}
 }
