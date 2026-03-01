@@ -299,7 +299,10 @@ result, err := agent.Execute(context.Background(), task)
 func TestGenericAgent_Integration(t *testing.T) {
     if testing.Short() { t.Skip() }
     apiKey := os.Getenv("OPENAI_API_KEY")
-    llm := openai.New(apiKey, "gpt-4o-mini", "", 0.7, 512)
+    llm, err := openai.New(apiKey, "gpt-4o-mini", "", 0.7, 512)
+    if err != nil {
+        t.Fatalf("failed to create LLM adapter: %v", err)
+    }
     agent := domain.NewGenericAgent(testConfig, llm, native.New(nil))
     result, err := agent.Execute(context.Background(), domain.Task{
         ID:     "test-1",

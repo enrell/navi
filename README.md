@@ -382,49 +382,47 @@ Navi is built around LLM weaknesses, not their strengths:
 
 ## Roadmap
 
-### Phase 1: Foundation (Current)
-- [x] Architecture design
-- [x] Core interfaces defined
+> **Note:** This roadmap is structured for practical, iterative AI-assisted development. We build the testing grounds and basic interaction modes first before tackling complex multi-agent orchestration.
+
+### Phase 1: Foundation & Testability (Current)
+- [x] Architecture design & core interfaces
 - [x] Threat model specification
 - [x] Basic orchestrator implementation
 - [x] First LLM adapter (OpenAI-compatible)
 - [x] Isolation adapter interfaces
+- [ ] **CLI REPL / Playground (To test LLM providers & prompts interactively)**
 
-### Phase 2: Security & Isolation
-- [ ] Docker adapter
-- [ ] Bubblewrap adapter (Linux)
+### Phase 2: Memory & Sandbox Hardening
 - [x] Native restricted sandbox
 - [x] Capability-based authority system
 - [x] Git integration for audit trail
+- [ ] Local Database (SQLite) & Event Log
+- [ ] Chat History persistence
 
-### Phase 3: Agent System
+### Phase 3: Minimum Viable Interface
+- [ ] Basic TUI prototype or minimal UI
+- [ ] Provider validation (e.g., Local/Ollama & OpenAI)
+- [ ] Interactive task testing and single-agent validation
+
+### Phase 4: Agent System & Orchestration
 - [ ] Multi-agent coordination
 - [ ] Intelligent task delegation
 - [ ] Parallel execution engine
 - [ ] Inter-agent communication protocol
 
-### Phase 4: Authentication & Modes
-- [ ] Authentication layer (all modes)
-- [ ] TUI authentication
-- [ ] API key management
+### Phase 5: Advanced Security & Modes
+- [ ] Docker adapter & Bubblewrap adapter (Linux)
+- [ ] Authentication layer & API key management
 - [ ] Operation mode system
-- [ ] Custom mode generation
 
-### Phase 5: Interfaces
-- [ ] TUI prototype (Bubble Tea)
-- [ ] REST API skeleton
-- [ ] Basic CLI commands
-- [ ] Event log viewer
-
-### Phase 6: Integrations
-- [ ] Discord bot
-- [ ] Telegram bot
+### Phase 6: Integrations & Extensibility
 - [ ] Custom tool registration
 - [ ] MCP layer implementation
+- [ ] REST API skeleton
+- [ ] Discord bot & Telegram bot
 
 ### Phase 7: Production Ready
-- [ ] Comprehensive testing
-- [ ] Security audit
+- [ ] Comprehensive testing & Security audit
 - [ ] Documentation
 - [ ] First stable release
 

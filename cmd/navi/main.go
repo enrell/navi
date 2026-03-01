@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -20,7 +21,8 @@ import (
 	"navi/internal/core/domain"
 	"navi/internal/core/ports"
 	"navi/internal/core/services/orchestrator"
-	"navi/internal/ui/tui"
+	"navi/internal/ui/api"
+	"navi/internal/ui/repl"
 )
 
 func main() {
@@ -50,14 +52,42 @@ func main() {
 
 	llmFactory := func(cfg domain.AgentConfig) (domain.LLMPort, error) {
 		apiKey := cfg.LLMAPIKey
+		baseURL := cfg.LLMBaseURL
 		if apiKey == "" {
-			apiKey = os.Getenv("OPENAI_API_KEY")
+			if key := os.Getenv("OPENAI_API_KEY"); key != "" {
+				apiKey = key
+			} else if key := os.Getenv("NVIDIA_API_KEY"); key != "" {
+				apiKey = key
+				if baseURL == "" {
+					baseURL = "https://integrate.api.nvidia.com/v1"
+				}
+			} else if key := os.Getenv("OPENROUTER_API_KEY"); key != "" {
+				apiKey = key
+				if baseURL == "" {
+					baseURL = "https://openrouter.ai/api/v1"
+				}
+			} else if key := os.Getenv("LLM_API_KEY"); key != "" {
+				apiKey = key
+			}
 		}
+
+		if b := os.Getenv("LLM_BASE_URL"); b != "" {
+			baseURL = b
+		}
+
 		switch strings.ToLower(cfg.LLMProvider) {
 		case "openai", "":
-			return openai.New(apiKey, cfg.LLMModel, cfg.LLMBaseURL, cfg.LLMTemperature, cfg.LLMMaxTokens), nil
+			adapter, err := openai.New(apiKey, cfg.LLMModel, baseURL, cfg.LLMTemperature, cfg.LLMMaxTokens)
+			if err != nil {
+				return nil, fmt.Errorf("failed to create OpenAI adapter: %w", err)
+			}
+			return adapter, nil
 		default:
-			return openai.New(apiKey, cfg.LLMModel, cfg.LLMBaseURL, cfg.LLMTemperature, cfg.LLMMaxTokens), nil
+			adapter, err := openai.New(apiKey, cfg.LLMModel, baseURL, cfg.LLMTemperature, cfg.LLMMaxTokens)
+			if err != nil {
+				return nil, fmt.Errorf("failed to create OpenAI adapter: %w", err)
+			}
+			return adapter, nil
 		}
 	}
 
@@ -98,15 +128,42 @@ func main() {
 		return
 	}
 
+	if len(args) >= 1 && args[0] == "serve" {
+		runServe(ctx, orch, args[1:])
+		return
+	}
+
+	if len(args) >= 1 && args[0] == "repl" {
+		runREPL(ctx, dbPath)
+		return
+	}
+
+	if len(args) >= 2 && args[0] == "chat" {
+		runChat(ctx, strings.Join(args[1:], " "))
+		return
+	}
+
 	if err := orch.Start(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "[warn] orchestrator start: %v\n", err)
 	}
 	defer orch.Shutdown()
 
-	t := tui.New(orch, sqliteRepo)
-	fmt.Println("Starting Navi — press Ctrl+C to quit.")
-	if err := t.Start(ctx); err != nil {
-		fatalf("TUI error: %v", err)
+	// Default: start REST API server
+	fmt.Println("Starting Navi REST API server on http://localhost:8080")
+	fmt.Println("Press Ctrl+C to quit.")
+	fmt.Println("")
+	fmt.Println("Available commands:")
+	fmt.Println("  navi serve        - Start REST API server")
+	fmt.Println("  navi repl         - Start REPL")
+	fmt.Println("  navi chat <msg>  - Single chat message")
+	fmt.Println("  navi agent list   - List agents")
+
+	server := api.New()
+	handlers := api.NewHandlers(orch)
+	handlers.RegisterRoutes(server.Router())
+
+	if err := http.ListenAndServe(":8080", server); err != nil {
+		fatalf("server error: %v", err)
 	}
 }
 
@@ -219,6 +276,142 @@ func runAgentRemove(ctx context.Context, orch *orchestrator.Orchestrator, id dom
 		fatalf("remove agent: %v", err)
 	}
 	fmt.Printf("✓ Agent %q removed.\n", id)
+}
+
+func runREPL(ctx context.Context, dbPath string) {
+	var apiKey, model, baseURL string
+
+	if key := os.Getenv("OPENAI_API_KEY"); key != "" {
+		apiKey = key
+		model = "gpt-4o-mini"
+	} else if key := os.Getenv("NVIDIA_API_KEY"); key != "" {
+		apiKey = key
+		baseURL = "https://integrate.api.nvidia.com/v1"
+		model = "meta/llama-3.3-70b-instruct" // Default nvidia model
+	} else if key := os.Getenv("OPENROUTER_API_KEY"); key != "" {
+		apiKey = key
+		baseURL = "https://openrouter.ai/api/v1"
+		model = "meta-llama/llama-3-8b-instruct:free" // Default free openrouter model
+	} else if key := os.Getenv("LLM_API_KEY"); key != "" {
+		apiKey = key
+	}
+
+	// Any specific overrides from env
+	if m := os.Getenv("LLM_MODEL"); m != "" {
+		model = m
+	}
+	if b := os.Getenv("LLM_BASE_URL"); b != "" {
+		baseURL = b
+	}
+
+	if apiKey == "" {
+		fatalf("No API key found. Please set OPENAI_API_KEY, NVIDIA_API_KEY, or OPENROUTER_API_KEY")
+	}
+
+	r, err := repl.NewRepl(dbPath, apiKey, model, baseURL)
+	if err != nil {
+		fatalf("Failed to initialize REPL: %v", err)
+	}
+	defer r.Close()
+
+	if err := r.Run(ctx); err != nil {
+		fatalf("REPL error: %v", err)
+	}
+}
+
+func runChat(ctx context.Context, prompt string) {
+	var apiKey, model, baseURL string
+
+	if key := os.Getenv("OPENAI_API_KEY"); key != "" {
+		apiKey = key
+		model = "gpt-4o-mini"
+	} else if key := os.Getenv("NVIDIA_API_KEY"); key != "" {
+		apiKey = key
+		baseURL = "https://integrate.api.nvidia.com/v1"
+		model = "meta/llama-3.3-70b-instruct"
+	} else if key := os.Getenv("OPENROUTER_API_KEY"); key != "" {
+		apiKey = key
+		baseURL = "https://openrouter.ai/api/v1"
+		model = "meta-llama/llama-3-8b-instruct:free"
+	} else if key := os.Getenv("LLM_API_KEY"); key != "" {
+		apiKey = key
+	}
+
+	if m := os.Getenv("LLM_MODEL"); m != "" {
+		model = m
+	}
+	if b := os.Getenv("LLM_BASE_URL"); b != "" {
+		baseURL = b
+	}
+
+	if apiKey == "" {
+		fatalf("No API key found. Please set OPENAI_API_KEY, NVIDIA_API_KEY, or OPENROUTER_API_KEY")
+	}
+
+	llm, err := openai.New(apiKey, model, baseURL, 0.7, 4096)
+	if err != nil {
+		fatalf("Failed to create LLM adapter: %v", err)
+	}
+	cfg := domain.AgentConfig{
+		ID:           "cli-agent",
+		Name:         "CLI Chat",
+		SystemPrompt: "You are a helpful CLI assistant.",
+	}
+	agent := domain.NewGenericAgent(cfg, llm, nil, nil)
+
+	task := domain.Task{
+		ID:      "cli-chat",
+		Prompt:  prompt,
+		AgentID: agent.ID(),
+	}
+
+	result, err := agent.Execute(ctx, task)
+	if err != nil {
+		fatalf("Agent Error: %v", err)
+	}
+	fmt.Println(result.Output)
+}
+
+func runServe(ctx context.Context, orch *orchestrator.Orchestrator, args []string) {
+	// Parse flags
+	addr := ":8080"
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--port" || args[i] == "-p" {
+			if i+1 < len(args) {
+				addr = ":" + args[i+1]
+				i++
+			}
+		} else if args[i] == "--host" {
+			if i+1 < len(args) {
+				addr = args[i+1] + addr
+				i++
+			}
+		}
+	}
+
+	// Start orchestrator if not already started
+	if err := orch.Start(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "[warn] orchestrator start: %v\n", err)
+	}
+	defer orch.Shutdown()
+
+	// Create API server
+	server := api.New()
+	handlers := api.NewHandlers(orch)
+	handlers.RegisterRoutes(server.Router())
+
+	fmt.Printf("Starting REST API server on http://%s\n", addr)
+	fmt.Println("Endpoints:")
+	fmt.Println("  GET  /health           - Health check")
+	fmt.Println("  GET  /agents           - List agents")
+	fmt.Println("  GET  /agents/:id       - Get agent details")
+	fmt.Println("  POST /tasks            - Create task")
+	fmt.Println("  GET  /tasks            - List tasks")
+	fmt.Println("  GET  /tasks/:id       - Get task status")
+
+	if err := http.ListenAndServe(addr, server); err != nil {
+		fatalf("server error: %v", err)
+	}
 }
 
 func fatalf(format string, a ...any) {
