@@ -68,6 +68,17 @@ func defaultAgentRoots() ([]string, error) {
 	return roots, nil
 }
 
+func bootstrapAgents(ctx context.Context, repo *sqlite.AgentRepository, roots []string) (int, error) {
+	agents, err := localfs.LoadAgentsFromRoots(roots)
+	if err != nil {
+		return 0, err
+	}
+	if err := repo.Seed(ctx, agents); err != nil {
+		return 0, err
+	}
+	return len(agents), nil
+}
+
 func newServeCommand(deps Dependencies, out io.Writer) *cobra.Command {
 	var port int
 
@@ -119,6 +130,15 @@ func newServeCommand(deps Dependencies, out io.Writer) *cobra.Command {
 				if err != nil {
 					return fmt.Errorf("serve: resolve agent roots: %w", err)
 				}
+
+				n, err := bootstrapAgents(cmd.Context(), agentRepo, roots)
+				if err != nil {
+					return fmt.Errorf("serve: bootstrap agents: %w", err)
+				}
+				if n > 0 {
+					fmt.Fprintf(out, "loaded %d agent(s) from data files\n", n)
+				}
+
 				srv.SetAgentSyncer(&localAgentSyncer{repo: agentRepo, roots: roots})
 			}
 

@@ -12,6 +12,7 @@ const (
 // Agent represents a configured AI agent the orchestrator can delegate work to.
 type Agent struct {
 	ID           string      `json:"id"`
+	Type         string      `json:"type,omitempty"`
 	Name         string      `json:"name"`
 	Description  string      `json:"description"`
 	Capabilities []string    `json:"capabilities"`

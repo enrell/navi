@@ -31,7 +31,7 @@ func TestLoadAgentsFromRoots_Empty(t *testing.T) {
 
 func TestLoadAgentsFromRoots_LoadsConfigAndMarkdown(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "agents")
-	writeFile(t, filepath.Join(root, "coder", "config.toml"), "name = \"Coder\"\ncapabilities = [\"filesystem:workspace:rw\", \"exec:go\"]\n")
+	writeFile(t, filepath.Join(root, "coder", "config.toml"), "type = \"generic\"\nname = \"Coder\"\ncapabilities = [\"filesystem:workspace:rw\", \"exec:go\"]\n")
 	writeFile(t, filepath.Join(root, "coder", "AGENT.md"), "You are coder\nMore details")
 
 	agents, err := localfs.LoadAgentsFromRoots([]string{root})
@@ -49,6 +49,9 @@ func TestLoadAgentsFromRoots_LoadsConfigAndMarkdown(t *testing.T) {
 	}
 	if agents[0].Description != "You are coder" {
 		t.Errorf("Description = %q, want first line from AGENT.md", agents[0].Description)
+	}
+	if agents[0].Type != "generic" {
+		t.Errorf("Type = %q, want generic", agents[0].Type)
 	}
 }
 
@@ -96,5 +99,35 @@ func TestLoadAgentsFromRoots_InvalidTOML(t *testing.T) {
 	_, err := localfs.LoadAgentsFromRoots([]string{root})
 	if err == nil {
 		t.Fatal("expected parse error")
+	}
+}
+
+func TestLoadGenericAgentsFromRoots_CustomPromptFile(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "agents")
+	writeFile(t, filepath.Join(root, "researcher", "config.toml"), "type = \"generic\"\nprompt = \"SYSTEM.md\"\nname = \"Researcher\"\n")
+	writeFile(t, filepath.Join(root, "researcher", "SYSTEM.md"), "You are researcher\nUse citations")
+
+	agents, err := localfs.LoadGenericAgentsFromRoots([]string{root})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(agents) != 1 {
+		t.Fatalf("len = %d, want 1", len(agents))
+	}
+	if agents[0].Config().PromptFile != "SYSTEM.md" {
+		t.Errorf("PromptFile = %q, want SYSTEM.md", agents[0].Config().PromptFile)
+	}
+	if agents[0].SystemPrompt() != "You are researcher\nUse citations" {
+		t.Errorf("unexpected system prompt: %q", agents[0].SystemPrompt())
+	}
+}
+
+func TestLoadGenericAgentsFromRoots_ExplicitMissingPromptFile_Error(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "agents")
+	writeFile(t, filepath.Join(root, "broken", "config.toml"), "type = \"generic\"\nprompt = \"MISSING.md\"\n")
+
+	_, err := localfs.LoadGenericAgentsFromRoots([]string{root})
+	if err == nil {
+		t.Fatal("expected missing prompt file error")
 	}
 }

@@ -18,6 +18,7 @@ import (
 // agentRecord is the SQLite persistence model for domain.Agent.
 type agentRecord struct {
 	ID           string `gorm:"primaryKey;size:255"`
+	Type         string `gorm:"size:64;not null;default:generic"`
 	Name         string `gorm:"size:255;not null"`
 	Description  string `gorm:"type:text"`
 	Capabilities string `gorm:"type:text;not null"` // JSON array []string
@@ -128,6 +129,7 @@ func toAgentRecord(a *domain.Agent) (agentRecord, error) {
 	}
 	return agentRecord{
 		ID:           a.ID,
+		Type:         a.Type,
 		Name:         a.Name,
 		Description:  a.Description,
 		Capabilities: string(caps),
@@ -142,6 +144,7 @@ func toAgentDomain(rec agentRecord) (domain.Agent, error) {
 	}
 	return domain.Agent{
 		ID:           rec.ID,
+		Type:         rec.Type,
 		Name:         rec.Name,
 		Description:  rec.Description,
 		Capabilities: caps,

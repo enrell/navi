@@ -36,6 +36,7 @@ func TestSeedAndFindByID(t *testing.T) {
 	repo := newAgentRepo(t)
 	seed := []*domain.Agent{{
 		ID:           "coder",
+		Type:         "generic",
 		Name:         "Coder",
 		Description:  "Writes code",
 		Capabilities: []string{"filesystem:workspace:rw", "exec:go,git"},
@@ -52,6 +53,9 @@ func TestSeedAndFindByID(t *testing.T) {
 	}
 	if got.Name != "Coder" {
 		t.Errorf("Name = %q, want Coder", got.Name)
+	}
+	if got.Type != "generic" {
+		t.Errorf("Type = %q, want generic", got.Type)
 	}
 	if len(got.Capabilities) != 2 {
 		t.Fatalf("capabilities len = %d, want 2", len(got.Capabilities))

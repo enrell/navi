@@ -20,17 +20,20 @@ import (
 
 type agentTOML struct {
 	ID           string   `toml:"id"`
+	Type         string   `toml:"type"`
+	Prompt       string   `toml:"prompt"`
 	Name         string   `toml:"name"`
 	Description  string   `toml:"description"`
 	Capabilities []string `toml:"capabilities"`
 	Status       string   `toml:"status"`
 }
 
-// LoadAgentsFromRoots loads all agent definitions from one or more roots.
+// LoadGenericAgentsFromRoots loads GenericAgent definitions from one or more
+// roots using config.toml + AGENT.md as the source of truth.
 // Missing roots are ignored; malformed files return an error.
 // If duplicate IDs are found, later roots overwrite earlier ones.
-func LoadAgentsFromRoots(roots []string) ([]*domain.Agent, error) {
-	byID := map[string]*domain.Agent{}
+func LoadGenericAgentsFromRoots(roots []string) ([]*domain.GenericAgent, error) {
+	byID := map[string]*domain.GenericAgent{}
 
 	for _, root := range roots {
 		if root == "" {
@@ -76,11 +79,30 @@ func LoadAgentsFromRoots(roots []string) ([]*domain.Agent, error) {
 				name = agentID
 			}
 
+			promptFile := strings.TrimSpace(cfg.Prompt)
+			if promptFile == "" {
+				promptFile = "AGENT.md"
+			}
+
+			promptPath := filepath.Join(agentDir, promptFile)
+			promptData, err := os.ReadFile(promptPath)
+			if err != nil {
+				if os.IsNotExist(err) {
+					// Backward compatibility: if config doesn't set prompt and AGENT.md
+					// is missing, keep empty prompt; if prompt was explicitly set,
+					// treat it as a hard error.
+					if strings.TrimSpace(cfg.Prompt) != "" {
+						return nil, fmt.Errorf("localfs agents: read prompt %q: %w", promptPath, err)
+					}
+					promptData = nil
+				} else {
+					return nil, fmt.Errorf("localfs agents: read prompt %q: %w", promptPath, err)
+				}
+			}
+
 			description := strings.TrimSpace(cfg.Description)
 			if description == "" {
-				if mdData, err := os.ReadFile(filepath.Join(agentDir, "AGENT.md")); err == nil {
-					description = strings.TrimSpace(firstLine(string(mdData)))
-				}
+				description = strings.TrimSpace(firstLine(string(promptData)))
 			}
 
 			status := domain.AgentStatusTrusted
@@ -96,13 +118,25 @@ func LoadAgentsFromRoots(roots []string) ([]*domain.Agent, error) {
 				}
 			}
 
-			byID[agentID] = &domain.Agent{
+			cfgType := strings.TrimSpace(strings.ToLower(cfg.Type))
+			if cfgType == "" {
+				cfgType = string(domain.AgentTypeGeneric)
+			}
+
+			ga, err := domain.NewGenericAgent(domain.AgentConfig{
 				ID:           agentID,
+				Type:         domain.AgentType(cfgType),
 				Name:         name,
 				Description:  description,
 				Capabilities: caps,
+				PromptFile:   promptFile,
 				Status:       status,
+			}, string(promptData))
+			if err != nil {
+				return nil, fmt.Errorf("localfs agents: %s: %w", agentID, err)
 			}
+
+			byID[agentID] = ga
 		}
 	}
 
@@ -112,11 +146,24 @@ func LoadAgentsFromRoots(roots []string) ([]*domain.Agent, error) {
 	}
 	sort.Strings(ids)
 
-	result := make([]*domain.Agent, 0, len(ids))
+	result := make([]*domain.GenericAgent, 0, len(ids))
 	for _, id := range ids {
 		result = append(result, byID[id])
 	}
 	return result, nil
+}
+
+// LoadAgentsFromRoots is a compatibility wrapper that returns only metadata.
+func LoadAgentsFromRoots(roots []string) ([]*domain.Agent, error) {
+	genericAgents, err := LoadGenericAgentsFromRoots(roots)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*domain.Agent, 0, len(genericAgents))
+	for _, ga := range genericAgents {
+		out = append(out, ga.AsAgent())
+	}
+	return out, nil
 }
 
 func firstLine(s string) string {
