@@ -1,0 +1,20 @@
+[default_llm]
+# Provider to use for LLM requests.
+# Supported: nvidia | openai | groq | openrouter | ollama
+provider = "nvidia"
+
+# Model name. Leave empty to use the provider's default.
+# NVIDIA default  : meta/llama-3.1-8b-instruct
+# OpenAI default  : gpt-4o-mini
+# Groq default    : llama-3.1-8b-instant
+# OpenRouter def. : meta-llama/llama-3.1-8b-instruct
+# Ollama default  : set explicitly, e.g. "llama3.1:8b"
+model = "meta/llama-3.1-8b-instruct"
+
+# Name of the environment variable that holds the API key.
+# The key itself is NOT stored in this file.
+api_key_env = "NVIDIA_API_KEY"
+
+# Optional: override the provider's base URL.
+# Useful for local proxies, self-hosted models, or development.
+# base_url = "http://localhost:8000/v1"

@@ -3,54 +3,104 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"navi/internal/config"
 )
 
-// Tests for the composition root (main.go).
-// Command behaviour is tested in cmd/navi/cmd/root_test.go.
-// LLM HTTP layer is tested in pkg/llm/openai/client_test.go.
-// Adapter translation is tested in internal/adapters/llm/openai/adapter_test.go.
-//
 // Note: main() itself cannot be unit-tested because it calls os.Exit(1) on
 // error — that line is the only legitimately uncoverable statement in the file.
 
 // ── buildLLMConfig ────────────────────────────────────────────────────────────
 
-func TestBuildLLMConfig_MissingKey(t *testing.T) {
-	t.Setenv("NVIDIA_API_KEY", "")
+func TestBuildLLMConfig_PathError(t *testing.T) {
+	sentinel := errors.New("no home directory")
+	orig := configPath
+	configPath = func() (string, error) { return "", sentinel }
+	t.Cleanup(func() { configPath = orig })
+
 	_, err := buildLLMConfig()
 	if err == nil {
-		t.Fatal("expected error when NVIDIA_API_KEY is unset")
+		t.Fatal("expected error from buildLLMConfig when configPath fails")
+	}
+	if !errors.Is(err, sentinel) {
+		t.Errorf("error = %v, want sentinel %v", err, sentinel)
+	}
+}
+
+// ── buildLLMConfigFrom ────────────────────────────────────────────────────────
+
+func TestBuildLLMConfigFrom_NoFile_DefaultsToNVIDIA(t *testing.T) {
+	t.Setenv("NVIDIA_API_KEY", "mykey")
+	t.Setenv("NAVI_LLM_BASE_URL", "")
+
+	cfg, err := buildLLMConfigFrom(noConfigPath(t))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(cfg.BaseURL, "nvidia") {
+		t.Errorf("BaseURL %q should contain 'nvidia'", cfg.BaseURL)
+	}
+	if cfg.APIKey != "mykey" {
+		t.Errorf("APIKey = %q, want mykey", cfg.APIKey)
+	}
+}
+
+func TestBuildLLMConfigFrom_MissingAPIKey(t *testing.T) {
+	t.Setenv("NVIDIA_API_KEY", "")
+	_, err := buildLLMConfigFrom(noConfigPath(t))
+	if err == nil {
+		t.Fatal("expected error when API key env var is unset")
 	}
 	if !strings.Contains(err.Error(), "NVIDIA_API_KEY") {
 		t.Errorf("error %q should mention NVIDIA_API_KEY", err.Error())
 	}
 }
 
-func TestBuildLLMConfig_WithKey(t *testing.T) {
-	t.Setenv("NVIDIA_API_KEY", "test-key")
-	t.Setenv("NAVI_LLM_BASE_URL", "")
+func TestBuildLLMConfigFrom_ModelOverride(t *testing.T) {
+	t.Setenv("NVIDIA_API_KEY", "k")
+	path := writeCfg(t, `[default_llm]
+provider = "nvidia"
+api_key_env = "NVIDIA_API_KEY"
+model = "custom-model-xyz"`)
 
-	cfg, err := buildLLMConfig()
+	cfg, err := buildLLMConfigFrom(path)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.APIKey != "test-key" {
-		t.Errorf("APIKey = %q, want test-key", cfg.APIKey)
-	}
-	if !strings.Contains(cfg.BaseURL, "nvidia.com") {
-		t.Errorf("BaseURL %q should point to nvidia.com by default", cfg.BaseURL)
+	if cfg.Model != "custom-model-xyz" {
+		t.Errorf("Model = %q, want custom-model-xyz", cfg.Model)
 	}
 }
 
-func TestBuildLLMConfig_BaseURLOverride(t *testing.T) {
+func TestBuildLLMConfigFrom_BaseURLOverride_FromFile(t *testing.T) {
+	t.Setenv("NVIDIA_API_KEY", "k")
+	t.Setenv("NAVI_LLM_BASE_URL", "")
+	path := writeCfg(t, `[default_llm]
+provider = "nvidia"
+api_key_env = "NVIDIA_API_KEY"
+base_url = "http://proxy:9999/v1"`)
+
+	cfg, err := buildLLMConfigFrom(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.BaseURL != "http://proxy:9999/v1" {
+		t.Errorf("BaseURL = %q, want http://proxy:9999/v1", cfg.BaseURL)
+	}
+}
+
+func TestBuildLLMConfigFrom_BaseURLOverride_FromEnv(t *testing.T) {
 	t.Setenv("NVIDIA_API_KEY", "k")
 	t.Setenv("NAVI_LLM_BASE_URL", "http://localhost:9999")
 
-	cfg, err := buildLLMConfig()
+	cfg, err := buildLLMConfigFrom(noConfigPath(t))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -59,13 +109,89 @@ func TestBuildLLMConfig_BaseURLOverride(t *testing.T) {
 	}
 }
 
+func TestBuildLLMConfigFrom_InvalidTOML(t *testing.T) {
+	path := writeCfg(t, "not valid toml ][")
+	_, err := buildLLMConfigFrom(path)
+	if err == nil {
+		t.Fatal("expected error for invalid TOML")
+	}
+}
+
+// ── providerPreset ───────────────────────────────────────────────────────────
+
+func TestProviderPreset_AllProviders(t *testing.T) {
+	cases := []struct {
+		provider    string
+		apiKeyEnv   string
+		apiKey      string
+		wantURLFrag string
+	}{
+		{config.ProviderNVIDIA, "X", "k", "nvidia"},
+		{"", "X", "k", "nvidia"}, // empty defaults to NVIDIA
+		{config.ProviderOpenAI, "X", "k", "openai"},
+		{config.ProviderGroq, "X", "k", "groq"},
+		{config.ProviderOpenRouter, "X", "k", "openrouter"},
+		{config.ProviderOllama, "", "", "localhost"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.provider+"_default", func(t *testing.T) {
+			cfg := config.Config{DefaultLLM: config.LLMConfig{
+				Provider:  tc.provider,
+				APIKeyEnv: tc.apiKeyEnv,
+			}}
+			got := providerPreset(cfg, tc.apiKey)
+			if !strings.Contains(got.BaseURL, tc.wantURLFrag) {
+				t.Errorf("BaseURL %q does not contain %q", got.BaseURL, tc.wantURLFrag)
+			}
+		})
+	}
+}
+
+func TestProviderPreset_OllamaDefaultModel(t *testing.T) {
+	cfg := config.Config{DefaultLLM: config.LLMConfig{Provider: config.ProviderOllama}}
+	got := providerPreset(cfg, "")
+	if got.Model == "" {
+		t.Error("Ollama model should not be empty when not specified")
+	}
+}
+
+func TestProviderPreset_OllamaCustomModel(t *testing.T) {
+	cfg := config.Config{DefaultLLM: config.LLMConfig{
+		Provider: config.ProviderOllama,
+		Model:    "mistral:latest",
+	}}
+	got := providerPreset(cfg, "")
+	if got.Model != "mistral:latest" {
+		t.Errorf("Model = %q, want mistral:latest", got.Model)
+	}
+}
+
+func TestProviderPreset_UppercaseProvider_NormalisedByValidate(t *testing.T) {
+	// validate() normalises to lowercase before providerPreset is called;
+	// verify that loading a config with uppercase provider works end-to-end.
+	t.Setenv("NVIDIA_API_KEY", "k")
+	path := writeCfg(t, `[default_llm]
+provider = "NVIDIA"
+api_key_env = "NVIDIA_API_KEY"`)
+
+	cfg, err := buildLLMConfigFrom(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(cfg.BaseURL, "nvidia") {
+		t.Errorf("BaseURL %q should contain 'nvidia'", cfg.BaseURL)
+	}
+}
+
 // ── run() ────────────────────────────────────────────────────────────────────
 
 func TestRun_MissingAPIKey(t *testing.T) {
 	t.Setenv("NVIDIA_API_KEY", "")
+	t.Setenv("NAVI_LLM_BASE_URL", "")
 	err := run([]string{"chat", "hello"}, &bytes.Buffer{})
 	if err == nil {
-		t.Fatal("expected error when NVIDIA_API_KEY is unset")
+		t.Fatal("expected error when API key is unset")
 	}
 	if !strings.Contains(err.Error(), "NVIDIA_API_KEY") {
 		t.Errorf("error %q should mention NVIDIA_API_KEY", err.Error())
@@ -75,11 +201,8 @@ func TestRun_MissingAPIKey(t *testing.T) {
 func TestRun_Help(t *testing.T) {
 	t.Setenv("NVIDIA_API_KEY", "k")
 	t.Setenv("NAVI_LLM_BASE_URL", "")
-
 	var buf bytes.Buffer
-	// --help exits cleanly (nil error) and prints usage, without calling the LLM.
-	err := run([]string{"--help"}, &buf)
-	if err != nil {
+	if err := run([]string{"--help"}, &buf); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !strings.Contains(buf.String(), "navi") {
@@ -111,7 +234,6 @@ func TestRun_ChatHappyPath(t *testing.T) {
 }
 
 func TestRun_ChatLLMError(t *testing.T) {
-	// Server returns an API error response.
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
@@ -131,4 +253,22 @@ func TestRun_ChatLLMError(t *testing.T) {
 	if !strings.Contains(err.Error(), "invalid api key") {
 		t.Errorf("error %q should mention 'invalid api key'", err.Error())
 	}
+}
+
+// ── helpers ───────────────────────────────────────────────────────────────────
+
+// noConfigPath returns a path that does not exist, causing LoadFrom to return defaults.
+func noConfigPath(t *testing.T) string {
+	t.Helper()
+	return filepath.Join(t.TempDir(), "config.toml")
+}
+
+// writeCfg writes TOML content to a temp file and returns its path.
+func writeCfg(t *testing.T, content string) string {
+	t.Helper()
+	path := noConfigPath(t)
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("writeCfg: %v", err)
+	}
+	return path
 }

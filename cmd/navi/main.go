@@ -14,8 +14,9 @@ import (
 
 	navcmd "navi/cmd/navi/cmd"
 	llmadapter "navi/internal/adapters/llm/openai"
+	"navi/internal/config"
 	"navi/internal/core/services/chat"
-	"navi/pkg/llm"
+	llmpkg "navi/pkg/llm"
 	pkgopenai "navi/pkg/llm/openai"
 )
 
@@ -29,13 +30,13 @@ func main() {
 // run is the testable entry point: it wires all dependencies and executes the
 // cobra command tree. Keeping args and out as parameters makes it injectable.
 func run(args []string, out io.Writer) error {
-	cfg, err := buildLLMConfig()
+	llmCfg, err := buildLLMConfig()
 	if err != nil {
 		return err
 	}
 
 	// Wire: pkg HTTP client → adapter (satisfies LLMPort) → chat service
-	adapter := llmadapter.New(cfg)
+	adapter := llmadapter.New(llmCfg)
 	chatService := chat.New(adapter)
 
 	deps := navcmd.Dependencies{
@@ -47,25 +48,81 @@ func run(args []string, out io.Writer) error {
 	return root.Execute()
 }
 
-// buildLLMConfig reads environment variables and returns the active LLM config.
-// Default provider: NVIDIA NIM (NVIDIA_API_KEY).
-// Override the base URL for testing: NAVI_LLM_BASE_URL.
+// configPath is a seam for tests that need to simulate config.Path() failures.
+var configPath = config.Path
+
+// buildLLMConfig loads the user config file and resolves it to a pkgopenai.Config.
+//
+// Resolution order:
+//  1. Read ~/.config/navi/config.toml (or platform equivalent); fall back to
+//     defaults if the file does not exist.
+//  2. Resolve the API key from the environment variable named in api_key_env.
+//  3. Apply NAVI_LLM_BASE_URL env override (used in tests / local proxies).
 func buildLLMConfig() (pkgopenai.Config, error) {
-	apiKey := os.Getenv("NVIDIA_API_KEY")
-	if apiKey == "" {
-		return pkgopenai.Config{}, fmt.Errorf(
-			"NVIDIA_API_KEY environment variable is not set\n" +
-				"  export NVIDIA_API_KEY=<your-key>  # https://build.nvidia.com",
-		)
+	path, err := configPath()
+	if err != nil {
+		return pkgopenai.Config{}, err
+	}
+	return buildLLMConfigFrom(path)
+}
+
+// buildLLMConfigFrom is the testable variant: it accepts an explicit config path
+// so tests can point at a temp file without touching the real user config.
+func buildLLMConfigFrom(cfgPath string) (pkgopenai.Config, error) {
+	cfg, err := config.LoadFrom(cfgPath)
+	if err != nil {
+		return pkgopenai.Config{}, err
 	}
 
-	cfg := llm.NVIDIA(apiKey)
+	apiKey, err := cfg.ResolveAPIKey()
+	if err != nil {
+		return pkgopenai.Config{}, err
+	}
+
+	llmCfg := providerPreset(cfg, apiKey)
 
 	// NAVI_LLM_BASE_URL overrides the provider endpoint — used in tests and
 	// local development to point at an httptest server or a local proxy.
 	if override := os.Getenv("NAVI_LLM_BASE_URL"); override != "" {
-		cfg.BaseURL = override
+		llmCfg.BaseURL = override
 	}
 
-	return cfg, nil
+	return llmCfg, nil
+}
+
+// providerPreset maps a validated Config to the corresponding pkgopenai.Config
+// preset, then applies any per-field overrides (model, base_url).
+//
+// The provider field must already be normalised to lowercase and validated by
+// config.LoadFrom — this function trusts that invariant and does not error.
+func providerPreset(cfg config.Config, apiKey string) pkgopenai.Config {
+	llm := cfg.DefaultLLM
+	var preset pkgopenai.Config
+
+	switch llm.Provider {
+	case config.ProviderOpenAI:
+		preset = llmpkg.OpenAI(apiKey)
+	case config.ProviderGroq:
+		preset = llmpkg.Groq(apiKey)
+	case config.ProviderOpenRouter:
+		preset = llmpkg.OpenRouter(apiKey)
+	case config.ProviderOllama:
+		model := llm.Model
+		if model == "" {
+			model = "llama3.1:8b"
+		}
+		preset = llmpkg.Ollama(model)
+	default: // config.ProviderNVIDIA and "" (empty = NVIDIA)
+		preset = llmpkg.NVIDIA(apiKey)
+	}
+
+	// Per-field overrides from config file.
+	if llm.Model != "" {
+		preset.Model = llm.Model
+	}
+	if llm.BaseURL != "" {
+		preset.BaseURL = llm.BaseURL
+	}
+
+	return preset
 }
