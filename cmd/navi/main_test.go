@@ -14,6 +14,84 @@ import (
 	"navi/internal/config"
 )
 
+func TestEnsureConfigDir_CreatesDirectory(t *testing.T) {
+	orig := configDir
+	tmp := filepath.Join(t.TempDir(), "navi-config")
+	configDir = func() (string, error) { return tmp, nil }
+	t.Cleanup(func() { configDir = orig })
+
+	if err := ensureConfigDir(); err != nil {
+		t.Fatalf("ensureConfigDir error: %v", err)
+	}
+	if fi, err := os.Stat(tmp); err != nil || !fi.IsDir() {
+		t.Fatalf("expected dir %q to exist", tmp)
+	}
+}
+
+func TestEnsureConfigDir_DirError(t *testing.T) {
+	orig := configDir
+	configDir = func() (string, error) { return "", errors.New("boom") }
+	t.Cleanup(func() { configDir = orig })
+
+	if err := ensureConfigDir(); err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestLoadEnvironment_ReadsDotEnv(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	dir := t.TempDir()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("Chdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(wd) })
+
+	if err := os.WriteFile(filepath.Join(dir, ".env.development"), []byte("NAVI_DEFAULT_MODEL=dev-model\n"), 0o600); err != nil {
+		t.Fatalf("write .env: %v", err)
+	}
+	t.Setenv("NAVI_ENV", "development")
+
+	loaded, err := loadEnvironment()
+	if err != nil {
+		t.Fatalf("loadEnvironment error: %v", err)
+	}
+	if len(loaded) != 1 || loaded[0] != ".env.development" {
+		t.Fatalf("loaded files = %+v, want [.env.development]", loaded)
+	}
+	if got := os.Getenv("NAVI_DEFAULT_MODEL"); got != "dev-model" {
+		t.Errorf("NAVI_DEFAULT_MODEL = %q, want dev-model", got)
+	}
+}
+
+func TestRun_DevelopmentPrintsLoadedEnvFiles(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	dir := t.TempDir()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("Chdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(wd) })
+
+	if err := os.WriteFile(filepath.Join(dir, ".env.development"), []byte("NAVI_DEFAULT_PROVIDER=ollama\n"), 0o600); err != nil {
+		t.Fatalf("write .env: %v", err)
+	}
+	t.Setenv("NAVI_ENV", "development")
+	t.Setenv("NAVI_LLM_BASE_URL", "")
+
+	var buf bytes.Buffer
+	if err := run([]string{"--help"}, &buf); err != nil {
+		t.Fatalf("run --help: %v", err)
+	}
+	if !strings.Contains(buf.String(), "[dev] loaded env files: .env.development") {
+		t.Errorf("output %q should contain loaded env files log", buf.String())
+	}
+}
+
 // Note: main() itself cannot be unit-tested because it calls os.Exit(1) on
 // error — that line is the only legitimately uncoverable statement in the file.
 
@@ -37,6 +115,7 @@ func TestBuildLLMConfig_PathError(t *testing.T) {
 // ── buildLLMConfigFrom ────────────────────────────────────────────────────────
 
 func TestBuildLLMConfigFrom_NoFile_DefaultsToNVIDIA(t *testing.T) {
+	clearNaviEnvOverrides(t)
 	t.Setenv("NVIDIA_API_KEY", "mykey")
 	t.Setenv("NAVI_LLM_BASE_URL", "")
 
@@ -53,6 +132,7 @@ func TestBuildLLMConfigFrom_NoFile_DefaultsToNVIDIA(t *testing.T) {
 }
 
 func TestBuildLLMConfigFrom_MissingAPIKey(t *testing.T) {
+	clearNaviEnvOverrides(t)
 	t.Setenv("NVIDIA_API_KEY", "")
 	_, err := buildLLMConfigFrom(noConfigPath(t))
 	if err == nil {
@@ -64,6 +144,7 @@ func TestBuildLLMConfigFrom_MissingAPIKey(t *testing.T) {
 }
 
 func TestBuildLLMConfigFrom_ModelOverride(t *testing.T) {
+	clearNaviEnvOverrides(t)
 	t.Setenv("NVIDIA_API_KEY", "k")
 	path := writeCfg(t, `[default_llm]
 provider = "nvidia"
@@ -80,6 +161,7 @@ model = "custom-model-xyz"`)
 }
 
 func TestBuildLLMConfigFrom_BaseURLOverride_FromFile(t *testing.T) {
+	clearNaviEnvOverrides(t)
 	t.Setenv("NVIDIA_API_KEY", "k")
 	t.Setenv("NAVI_LLM_BASE_URL", "")
 	path := writeCfg(t, `[default_llm]
@@ -97,6 +179,7 @@ base_url = "http://proxy:9999/v1"`)
 }
 
 func TestBuildLLMConfigFrom_BaseURLOverride_FromEnv(t *testing.T) {
+	clearNaviEnvOverrides(t)
 	t.Setenv("NVIDIA_API_KEY", "k")
 	t.Setenv("NAVI_LLM_BASE_URL", "http://localhost:9999")
 
@@ -109,7 +192,55 @@ func TestBuildLLMConfigFrom_BaseURLOverride_FromEnv(t *testing.T) {
 	}
 }
 
+func TestBuildLLMConfigFrom_EnvProviderAndModelOverride(t *testing.T) {
+	t.Setenv("NAVI_DEFAULT_PROVIDER", "openai")
+	t.Setenv("NAVI_DEFAULT_MODEL", "gpt-4.1-mini")
+	t.Setenv("NAVI_DEFAULT_API_KEY_ENV", "OPENAI_API_KEY")
+	t.Setenv("OPENAI_API_KEY", "k-openai")
+	t.Setenv("NAVI_LLM_BASE_URL", "")
+
+	cfg, err := buildLLMConfigFrom(noConfigPath(t))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(cfg.BaseURL, "openai") {
+		t.Errorf("BaseURL %q should contain openai", cfg.BaseURL)
+	}
+	if cfg.Model != "gpt-4.1-mini" {
+		t.Errorf("Model = %q, want gpt-4.1-mini", cfg.Model)
+	}
+	if cfg.APIKey != "k-openai" {
+		t.Errorf("APIKey = %q, want k-openai", cfg.APIKey)
+	}
+}
+
+func TestBuildLLMConfigFrom_NaviAPIKeyOverride(t *testing.T) {
+	t.Setenv("NAVI_DEFAULT_PROVIDER", "openai")
+	t.Setenv("NAVI_API_KEY", "navi-key")
+	t.Setenv("NAVI_LLM_BASE_URL", "")
+
+	cfg, err := buildLLMConfigFrom(noConfigPath(t))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.APIKey != "navi-key" {
+		t.Errorf("APIKey = %q, want navi-key", cfg.APIKey)
+	}
+}
+
+func TestBuildLLMConfigFrom_InvalidEnvProvider(t *testing.T) {
+	t.Setenv("NAVI_DEFAULT_PROVIDER", "not-real")
+	_, err := buildLLMConfigFrom(noConfigPath(t))
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "NAVI_DEFAULT_PROVIDER") {
+		t.Errorf("error %q should mention NAVI_DEFAULT_PROVIDER", err.Error())
+	}
+}
+
 func TestBuildLLMConfigFrom_InvalidTOML(t *testing.T) {
+	clearNaviEnvOverrides(t)
 	path := writeCfg(t, "not valid toml ][")
 	_, err := buildLLMConfigFrom(path)
 	if err == nil {
@@ -271,4 +402,12 @@ func writeCfg(t *testing.T, content string) string {
 		t.Fatalf("writeCfg: %v", err)
 	}
 	return path
+}
+
+func clearNaviEnvOverrides(t *testing.T) {
+	t.Helper()
+	t.Setenv("NAVI_DEFAULT_PROVIDER", "")
+	t.Setenv("NAVI_DEFAULT_MODEL", "")
+	t.Setenv("NAVI_DEFAULT_API_KEY_ENV", "")
+	t.Setenv("NAVI_API_KEY", "")
 }

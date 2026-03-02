@@ -34,6 +34,7 @@ type toolExecStub struct {
 	err      error
 	lastName string
 	lastIn   string
+	calls    []string
 }
 
 func (s *toolExecStub) ListTools(context.Context) ([]ports.Tool, error) {
@@ -43,6 +44,7 @@ func (s *toolExecStub) ListTools(context.Context) ([]ports.Tool, error) {
 func (s *toolExecStub) ExecuteTool(_ context.Context, name, input string) (string, error) {
 	s.lastName = name
 	s.lastIn = input
+	s.calls = append(s.calls, name+"="+input)
 	if s.err != nil {
 		return "", s.err
 	}
@@ -95,5 +97,41 @@ func TestAsk_PropagatesLLMError(t *testing.T) {
 	}
 	if !errors.Is(err, boom) {
 		t.Errorf("error = %v, want wrapped %v", err, boom)
+	}
+}
+
+func TestAskWithTrace_MultiToolArray(t *testing.T) {
+	llm := &llmStub{replies: []string{
+		"Let me run all tools.\nTOOL_CALL [{\"name\":\"mcp.echo\",\"input\":\"A\"},{\"name\":\"native.echo\",\"input\":\"B\"}]",
+		"All tools completed",
+	}}
+	tools := &toolExecStub{tools: []ports.Tool{{Name: "mcp.echo"}, {Name: "native.echo"}}, result: "ok"}
+	svc := orchestrator.New(llm, tools)
+
+	got, trace, err := svc.AskWithTrace(context.Background(), "test tools")
+	if err != nil {
+		t.Fatalf("AskWithTrace error: %v", err)
+	}
+	if got != "All tools completed" {
+		t.Errorf("got %q, want %q", got, "All tools completed")
+	}
+	if len(tools.calls) != 2 {
+		t.Fatalf("tool calls = %d, want 2", len(tools.calls))
+	}
+	if tools.calls[0] != "mcp.echo=A" || tools.calls[1] != "native.echo=B" {
+		t.Errorf("tool calls = %+v, want [mcp.echo=A native.echo=B]", tools.calls)
+	}
+
+	if len(trace) < 4 {
+		t.Fatalf("trace len = %d, want at least 4", len(trace))
+	}
+	if trace[0].Type != orchestrator.TraceThinking {
+		t.Fatalf("trace[0].Type = %q, want thinking", trace[0].Type)
+	}
+	if trace[1].Type != orchestrator.TraceToolResponse || trace[2].Type != orchestrator.TraceToolResponse {
+		t.Fatalf("expected tool response events in trace: %+v", trace)
+	}
+	if trace[len(trace)-1].Type != orchestrator.TraceOrchestrator {
+		t.Fatalf("last trace type = %q, want orchestrator", trace[len(trace)-1].Type)
 	}
 }

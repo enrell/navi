@@ -15,9 +15,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/joho/godotenv"
+
 	navcmd "navi/cmd/navi/cmd"
-	"navi/internal/adapters/mcp/inprocess"
 	llmadapter "navi/internal/adapters/llm/openai"
+	"navi/internal/adapters/mcp/inprocess"
 	"navi/internal/adapters/tools"
 	"navi/internal/config"
 	"navi/internal/core/services/chat"
@@ -36,6 +38,17 @@ func main() {
 // run is the testable entry point: it wires all dependencies and executes the
 // cobra command tree. Keeping args and out as parameters makes it injectable.
 func run(args []string, out io.Writer) error {
+	if err := ensureConfigDir(); err != nil {
+		return err
+	}
+	loadedEnvFiles, err := loadEnvironment()
+	if err != nil {
+		return err
+	}
+	if strings.EqualFold(os.Getenv("NAVI_ENV"), "development") && len(loadedEnvFiles) > 0 {
+		fmt.Fprintf(out, "[dev] loaded env files: %s\n", strings.Join(loadedEnvFiles, ", "))
+	}
+
 	llmCfg, err := buildLLMConfig()
 	if err != nil {
 		return err
@@ -77,6 +90,41 @@ func run(args []string, out io.Writer) error {
 
 // configPath is a seam for tests that need to simulate config.Path() failures.
 var configPath = config.Path
+var configDir = config.Dir
+
+func ensureConfigDir() error {
+	dir, err := configDir()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("config: create dir %q: %w", dir, err)
+	}
+	return nil
+}
+
+func loadEnvironment() ([]string, error) {
+	env := strings.ToLower(strings.TrimSpace(os.Getenv("NAVI_ENV")))
+	if env == "" {
+		env = "development"
+		_ = os.Setenv("NAVI_ENV", env)
+	}
+
+	paths := []string{".env", ".env.local", ".env." + env, ".env." + env + ".local"}
+	existing := make([]string, 0, len(paths))
+	for _, p := range paths {
+		if _, err := os.Stat(p); err == nil {
+			existing = append(existing, p)
+		}
+	}
+	if len(existing) == 0 {
+		return nil, nil
+	}
+	if err := godotenv.Load(existing...); err != nil {
+		return nil, fmt.Errorf("env: load .env files: %w", err)
+	}
+	return existing, nil
+}
 
 // buildLLMConfig loads the user config file and resolves it to a pkgopenai.Config.
 //
@@ -100,6 +148,9 @@ func buildLLMConfigFrom(cfgPath string) (pkgopenai.Config, error) {
 	if err != nil {
 		return pkgopenai.Config{}, err
 	}
+	if err := applyEnvironmentOverrides(&cfg); err != nil {
+		return pkgopenai.Config{}, err
+	}
 
 	apiKey, err := cfg.ResolveAPIKey()
 	if err != nil {
@@ -115,6 +166,33 @@ func buildLLMConfigFrom(cfgPath string) (pkgopenai.Config, error) {
 	}
 
 	return llmCfg, nil
+}
+
+func applyEnvironmentOverrides(cfg *config.Config) error {
+	if provider := strings.TrimSpace(os.Getenv("NAVI_DEFAULT_PROVIDER")); provider != "" {
+		provider = strings.ToLower(provider)
+		switch provider {
+		case config.ProviderNVIDIA, config.ProviderOpenAI, config.ProviderGroq, config.ProviderOpenRouter, config.ProviderOllama:
+			cfg.DefaultLLM.Provider = provider
+		default:
+			return fmt.Errorf("env: invalid NAVI_DEFAULT_PROVIDER %q", provider)
+		}
+	}
+
+	if model := strings.TrimSpace(os.Getenv("NAVI_DEFAULT_MODEL")); model != "" {
+		cfg.DefaultLLM.Model = model
+	}
+
+	if apiKeyEnv := strings.TrimSpace(os.Getenv("NAVI_DEFAULT_API_KEY_ENV")); apiKeyEnv != "" {
+		cfg.DefaultLLM.APIKeyEnv = apiKeyEnv
+	}
+
+	if apiKey := strings.TrimSpace(os.Getenv("NAVI_API_KEY")); apiKey != "" {
+		_ = os.Setenv("NAVI_API_KEY", apiKey)
+		cfg.DefaultLLM.APIKeyEnv = "NAVI_API_KEY"
+	}
+
+	return nil
 }
 
 // providerPreset maps a validated Config to the corresponding pkgopenai.Config

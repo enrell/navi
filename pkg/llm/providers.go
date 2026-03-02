@@ -10,12 +10,12 @@ import "navi/pkg/llm/openai"
 
 // NVIDIA returns a Config for NVIDIA NIM (api.nvidia.com).
 // Set the NVIDIA_API_KEY environment variable to authenticate.
-// Default model: meta/llama-3.1-8b-instruct.
+// Default model: stepfun-ai/step-3.5-flash.
 func NVIDIA(apiKey string) openai.Config {
 	return openai.Config{
 		BaseURL: "https://integrate.api.nvidia.com/v1",
 		APIKey:  apiKey,
-		Model:   "meta/llama-3.1-8b-instruct",
+		Model:   "stepfun-ai/step-3.5-flash",
 	}
 }
 

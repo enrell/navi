@@ -19,9 +19,9 @@ import (
 // Dependencies carries the wired application services into the command tree.
 // Adding a new service? Add a field here — commands stay clean.
 type Dependencies struct {
-	Chat   *chat.Service
-	Tasks  *tasksvc.Service
-	Agents *agentsvc.Service
+	Chat         *chat.Service
+	Tasks        *tasksvc.Service
+	Agents       *agentsvc.Service
 	Orchestrator *orchestratorsvc.Service
 }
 

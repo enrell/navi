@@ -6,6 +6,8 @@ import (
 	"io"
 	"strings"
 
+	orchestratorsvc "navi/internal/core/services/orchestrator"
+
 	"github.com/spf13/cobra"
 )
 
@@ -47,8 +49,23 @@ func newReplCommand(deps Dependencies, out io.Writer) *cobra.Command {
 					reply string
 					err   error
 				)
+
+				fmt.Fprintf(out, "\nUser: %s\n", line)
 				if deps.Orchestrator != nil {
-					reply, err = deps.Orchestrator.Ask(cmd.Context(), line)
+					var trace []orchestratorsvc.TraceEvent
+					reply, trace, err = deps.Orchestrator.AskWithTrace(cmd.Context(), line)
+					if err == nil {
+						for _, event := range trace {
+							switch event.Type {
+							case "thinking":
+								if strings.TrimSpace(event.Content) != "" {
+									fmt.Fprintf(out, "Thinking: %s\n", event.Content)
+								}
+							case "tool_response":
+								fmt.Fprintf(out, "Tool Response [%s]: %s\n", event.Tool, event.Content)
+							}
+						}
+					}
 				} else {
 					reply, err = deps.Chat.Chat(cmd.Context(), line)
 				}
@@ -57,7 +74,7 @@ func newReplCommand(deps Dependencies, out io.Writer) *cobra.Command {
 					continue
 				}
 
-				fmt.Fprintln(out, reply)
+				fmt.Fprintf(out, "Orchestrator: %s\n", reply)
 			}
 		},
 	}

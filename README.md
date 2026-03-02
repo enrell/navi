@@ -31,6 +31,41 @@
 
 ---
 
+## Development Environment (.env)
+
+For local development after cloning, you can configure Navi with a `.env` file.
+
+1. Copy `.env.example` to `.env`
+2. Set your provider, model, and API key
+3. Run `go run ./cmd/navi/main.go repl` or `navi serve`
+
+Supported environment variables:
+
+- `NAVI_ENV` (`development` or `production`) — selects `.env.<env>` loading
+- `NAVI_DEFAULT_PROVIDER` — `nvidia|openai|groq|openrouter|ollama`
+- `NAVI_DEFAULT_MODEL` — default model name
+- `NAVI_API_KEY` — direct API key for development
+- `NAVI_DEFAULT_API_KEY_ENV` — env var name to read key from (alternative to `NAVI_API_KEY`)
+- `NAVI_LLM_BASE_URL` — endpoint override (proxy/local testing)
+
+Load order (if files exist):
+
+`.env` → `.env.local` → `.env.<NAVI_ENV>` → `.env.<NAVI_ENV>.local`
+
+---
+
+## First Launch: ~/.config/navi creation
+
+Navi now creates the user config directory on startup (`os.UserConfigDir()/navi`) before command execution.
+
+- Linux: `~/.config/navi`
+- macOS: `~/Library/Application Support/navi`
+- Windows: `%AppData%\navi`
+
+This happens on first launch of any Navi command.
+
+---
+
 ## What is Navi?
 
 Navi is an AI orchestrator designed to be the **maestro of your automation orchestra**. It connects disparate tools, scripts, and services without requiring ugly glue code, while keeping **you in full control**.
@@ -198,22 +233,6 @@ Authority is expressed as **explicit capabilities**, enforced by the chosen isol
 | **REPL** | Local token or password |
 | **Discord Bot** | Discord OAuth + user linking |
 | **Telegram Bot** | Telegram user ID + PIN |
-
----
-
-## Development Strategy
-
-Navi is being developed in phases to ensure a solid foundation:
-
-### Phase 1: REST API First (Current)
-The REST API is the primary interface during initial development. This approach:
-- **Facilitates rapid development**: External tools and scripts can easily integrate
-- **Simplifies debugging**: HTTP is easier to inspect than terminal UI
-- **Enables automation**: CI/CD pipelines and external services can submit tasks
-- **Separation of concerns**: Backend (orchestrator/agents) is decoupled from presentation
-
-### Phase 2: TUI (Planned)
-A Terminal User Interface will be added once the backend is stable.
 
 ---
 

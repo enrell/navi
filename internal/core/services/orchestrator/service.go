@@ -18,6 +18,20 @@ type toolCall struct {
 	Input string `json:"input"`
 }
 
+type TraceEventType string
+
+const (
+	TraceThinking     TraceEventType = "thinking"
+	TraceToolResponse TraceEventType = "tool_response"
+	TraceOrchestrator TraceEventType = "orchestrator"
+)
+
+type TraceEvent struct {
+	Type    TraceEventType
+	Tool    string
+	Content string
+}
+
 // Service is a simple orchestrator agent that can call tools in a loop.
 type Service struct {
 	llm      ports.LLMPort
@@ -33,14 +47,23 @@ func New(llm ports.LLMPort, tools ports.ToolExecutor) *Service {
 // The model can request a tool by replying with:
 // TOOL_CALL {"name":"tool.name","input":"..."}
 func (s *Service) Ask(ctx context.Context, userMessage string) (string, error) {
+	reply, _, err := s.AskWithTrace(ctx, userMessage)
+	return reply, err
+}
+
+// AskWithTrace runs the same loop as Ask and also returns trace events that the
+// TUI can render to make model/tool behavior explicit.
+func (s *Service) AskWithTrace(ctx context.Context, userMessage string) (string, []TraceEvent, error) {
 	if strings.TrimSpace(userMessage) == "" {
-		return "", fmt.Errorf("orchestrator: message cannot be empty")
+		return "", nil, fmt.Errorf("orchestrator: message cannot be empty")
 	}
 
 	systemPrompt, err := s.buildSystemPrompt(ctx)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
+
+	trace := make([]TraceEvent, 0, 8)
 
 	messages := []domain.Message{
 		{Role: domain.RoleSystem, Content: systemPrompt},
@@ -50,26 +73,43 @@ func (s *Service) Ask(ctx context.Context, userMessage string) (string, error) {
 	for i := 0; i < s.maxTurns; i++ {
 		reply, err := s.llm.Chat(ctx, messages)
 		if err != nil {
-			return "", fmt.Errorf("orchestrator: llm: %w", err)
+			return "", trace, fmt.Errorf("orchestrator: llm: %w", err)
 		}
 
-		call, ok := parseToolCall(reply)
+		calls, thinking, ok := parseToolCalls(reply)
 		if !ok {
-			return strings.TrimSpace(reply), nil
+			finalReply := strings.TrimSpace(reply)
+			if finalReply != "" {
+				trace = append(trace, TraceEvent{Type: TraceOrchestrator, Content: finalReply})
+			}
+			return finalReply, trace, nil
 		}
 
-		result, err := s.tools.ExecuteTool(ctx, call.Name, call.Input)
-		if err != nil {
-			result = "tool execution error: " + err.Error()
+		if thinking == "" {
+			thinking = "Model requested tool execution."
 		}
+		trace = append(trace, TraceEvent{Type: TraceThinking, Content: thinking})
+
+		toolResults := make([]string, 0, len(calls))
+		for _, call := range calls {
+			result, err := s.tools.ExecuteTool(ctx, call.Name, call.Input)
+			if err != nil {
+				result = "tool execution error: " + err.Error()
+			}
+
+			trace = append(trace, TraceEvent{Type: TraceToolResponse, Tool: call.Name, Content: result})
+			toolResults = append(toolResults, fmt.Sprintf("TOOL_RESULT name=%s\n%s", call.Name, result))
+		}
+
+		toolResultBlock := strings.Join(toolResults, "\n\n")
 
 		messages = append(messages,
 			domain.Message{Role: domain.RoleAssistant, Content: strings.TrimSpace(reply)},
-			domain.Message{Role: domain.RoleUser, Content: fmt.Sprintf("TOOL_RESULT name=%s\n%s", call.Name, result)},
+			domain.Message{Role: domain.RoleUser, Content: toolResultBlock},
 		)
 	}
 
-	return "", fmt.Errorf("orchestrator: max tool iterations reached")
+	return "", trace, fmt.Errorf("orchestrator: max tool iterations reached")
 }
 
 func (s *Service) buildSystemPrompt(ctx context.Context) (string, error) {
@@ -109,28 +149,41 @@ func (s *Service) buildSystemPrompt(ctx context.Context) (string, error) {
 	return strings.Join(lines, "\n"), nil
 }
 
-func parseToolCall(reply string) (toolCall, bool) {
-	for _, line := range strings.Split(reply, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if !strings.HasPrefix(trimmed, "TOOL_CALL") {
-			continue
-		}
-
-		payload := strings.TrimSpace(strings.TrimPrefix(trimmed, "TOOL_CALL"))
-		if payload == "" {
-			return toolCall{}, false
-		}
-
-		var call toolCall
-		if err := json.Unmarshal([]byte(payload), &call); err != nil {
-			return toolCall{}, false
-		}
-		call.Name = strings.TrimSpace(call.Name)
-		if call.Name == "" {
-			return toolCall{}, false
-		}
-		return call, true
+func parseToolCalls(reply string) ([]toolCall, string, bool) {
+	idx := strings.Index(reply, "TOOL_CALL")
+	if idx < 0 {
+		return nil, "", false
 	}
 
-	return toolCall{}, false
+	thinking := strings.TrimSpace(reply[:idx])
+	payload := strings.TrimSpace(reply[idx+len("TOOL_CALL"):])
+	if payload == "" {
+		return nil, thinking, false
+	}
+
+	var many []toolCall
+	if err := json.Unmarshal([]byte(payload), &many); err == nil {
+		cleaned := make([]toolCall, 0, len(many))
+		for _, call := range many {
+			call.Name = strings.TrimSpace(call.Name)
+			if call.Name == "" {
+				continue
+			}
+			cleaned = append(cleaned, call)
+		}
+		if len(cleaned) == 0 {
+			return nil, thinking, false
+		}
+		return cleaned, thinking, true
+	}
+
+	var one toolCall
+	if err := json.Unmarshal([]byte(payload), &one); err != nil {
+		return nil, thinking, false
+	}
+	one.Name = strings.TrimSpace(one.Name)
+	if one.Name == "" {
+		return nil, thinking, false
+	}
+	return []toolCall{one}, thinking, true
 }

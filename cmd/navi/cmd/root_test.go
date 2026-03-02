@@ -172,6 +172,27 @@ func TestRepl_UsesOrchestratorWhenAvailable(t *testing.T) {
 	}
 }
 
+func TestRepl_ClearSectionsForThinkingAndToolResponse(t *testing.T) {
+	in := strings.NewReader("hello\nquit\n")
+	out, err := executeWithInput(newOrchestratedDeps([]string{
+		"Let me run a tool.\nTOOL_CALL {\"name\":\"native.echo\",\"input\":\"ping\"}",
+		"Done.",
+	}), in, "repl")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, want := range []string{
+		"User: hello",
+		"Thinking:",
+		"Tool Response [native.echo]: ping",
+		"Orchestrator: Done.",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output %q should contain %q", out, want)
+		}
+	}
+}
+
 // ── serve command ─────────────────────────────────────────────────────────────
 // The serve command starts a real, blocking HTTP server, so we do NOT invoke
 // it end-to-end here. Full HTTP handler coverage lives in
