@@ -10,9 +10,11 @@ import (
 
 	"navi/cmd/navi/cmd"
 	"navi/internal/adapters/persistence/memory"
+	"navi/internal/adapters/tools"
 	"navi/internal/core/domain"
 	agentsvc "navi/internal/core/services/agent"
 	"navi/internal/core/services/chat"
+	orchestratorsvc "navi/internal/core/services/orchestrator"
 	tasksvc "navi/internal/core/services/task"
 )
 
@@ -34,10 +36,22 @@ func newDeps(reply string, err error) cmd.Dependencies {
 	taskService := tasksvc.New(memory.NewTaskRepository(), chatService)
 	agentService := agentsvc.New(memory.NewAgentRepository(nil))
 	return cmd.Dependencies{
-		Chat:   chatService,
-		Tasks:  taskService,
-		Agents: agentService,
+		Chat:         chatService,
+		Tasks:        taskService,
+		Agents:       agentService,
+		Orchestrator: nil,
 	}
+}
+
+func newOrchestratedDeps(replys []string) cmd.Dependencies {
+	llm := &sequenceLLM{replies: replys}
+	registry := tools.NewRegistry()
+	_ = registry.Register("native.echo", "Echo", func(_ context.Context, input string) (string, error) { return input, nil })
+	orch := orchestratorsvc.New(llm, registry)
+
+	deps := newDeps("", nil)
+	deps.Orchestrator = orch
+	return deps
 }
 
 func execute(deps cmd.Dependencies, args ...string) (string, error) {
@@ -140,10 +154,21 @@ func TestRepl_NilChatService(t *testing.T) {
 	deps.Chat = nil
 	_, err := executeWithInput(deps, strings.NewReader("exit\n"), "repl")
 	if err == nil {
-		t.Fatal("expected error for nil chat service")
+		t.Fatal("expected error for missing repl services")
 	}
-	if !strings.Contains(err.Error(), "chat service is not wired") {
-		t.Errorf("error %q should mention chat service wiring", err.Error())
+	if !strings.Contains(err.Error(), "neither orchestrator nor chat") {
+		t.Errorf("error %q should mention repl service wiring", err.Error())
+	}
+}
+
+func TestRepl_UsesOrchestratorWhenAvailable(t *testing.T) {
+	in := strings.NewReader("hello\nquit\n")
+	out, err := executeWithInput(newOrchestratedDeps([]string{"orchestrated response"}), in, "repl")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "orchestrated response") {
+		t.Errorf("output %q should contain orchestrated response", out)
 	}
 }
 
@@ -202,4 +227,18 @@ func (c *captureLLM) Chat(_ context.Context, messages []domain.Message) (string,
 		}
 	}
 	return "ok", nil
+}
+
+type sequenceLLM struct {
+	replies []string
+	i       int
+}
+
+func (s *sequenceLLM) Chat(_ context.Context, _ []domain.Message) (string, error) {
+	if s.i >= len(s.replies) {
+		return "", nil
+	}
+	r := s.replies[s.i]
+	s.i++
+	return r, nil
 }

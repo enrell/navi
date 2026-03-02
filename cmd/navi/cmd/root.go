@@ -12,6 +12,7 @@ import (
 
 	agentsvc "navi/internal/core/services/agent"
 	"navi/internal/core/services/chat"
+	orchestratorsvc "navi/internal/core/services/orchestrator"
 	tasksvc "navi/internal/core/services/task"
 )
 
@@ -21,6 +22,7 @@ type Dependencies struct {
 	Chat   *chat.Service
 	Tasks  *tasksvc.Service
 	Agents *agentsvc.Service
+	Orchestrator *orchestratorsvc.Service
 }
 
 // NewRootCommand builds and returns the fully configured cobra command tree.

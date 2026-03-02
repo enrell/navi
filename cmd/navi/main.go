@@ -8,14 +8,20 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
+	"strings"
+	"time"
 
 	navcmd "navi/cmd/navi/cmd"
+	"navi/internal/adapters/mcp/inprocess"
 	llmadapter "navi/internal/adapters/llm/openai"
+	"navi/internal/adapters/tools"
 	"navi/internal/config"
 	"navi/internal/core/services/chat"
+	orchestratorsvc "navi/internal/core/services/orchestrator"
 	llmpkg "navi/pkg/llm"
 	pkgopenai "navi/pkg/llm/openai"
 )
@@ -39,10 +45,29 @@ func run(args []string, out io.Writer) error {
 	adapter := llmadapter.New(llmCfg)
 	chatService := chat.New(adapter)
 
+	toolRegistry := tools.NewRegistry()
+	_ = toolRegistry.Register("native.now", "Current UTC time in RFC3339", func(_ context.Context, _ string) (string, error) {
+		return time.Now().UTC().Format(time.RFC3339), nil
+	})
+	_ = toolRegistry.Register("native.echo", "Echo input text", func(_ context.Context, input string) (string, error) {
+		return strings.TrimSpace(input), nil
+	})
+
+	mcpClient := inprocess.New()
+	_ = mcpClient.Register("echo", func(_ context.Context, input string) (string, error) {
+		return "mcp echo: " + strings.TrimSpace(input), nil
+	})
+	_ = toolRegistry.Register("mcp.echo", "Call MCP echo tool", func(ctx context.Context, input string) (string, error) {
+		return mcpClient.CallTool(ctx, "echo", input)
+	})
+
+	orchestratorService := orchestratorsvc.New(adapter, toolRegistry)
+
 	deps := navcmd.Dependencies{
-		Chat:   chatService,
-		Tasks:  nil, // serve command lazily wires SQLite-backed task service
-		Agents: nil, // serve command lazily wires SQLite-backed agent service
+		Chat:         chatService,
+		Tasks:        nil, // serve command lazily wires SQLite-backed task service
+		Agents:       nil, // serve command lazily wires SQLite-backed agent service
+		Orchestrator: orchestratorService,
 	}
 
 	root := navcmd.NewRootCommand(deps, out)

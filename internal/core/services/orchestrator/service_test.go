@@ -1,0 +1,99 @@
+package orchestrator_test
+
+import (
+	"context"
+	"errors"
+	"testing"
+
+	"navi/internal/core/domain"
+	"navi/internal/core/ports"
+	"navi/internal/core/services/orchestrator"
+)
+
+type llmStub struct {
+	replies []string
+	err     error
+	idx     int
+}
+
+func (s *llmStub) Chat(_ context.Context, _ []domain.Message) (string, error) {
+	if s.err != nil {
+		return "", s.err
+	}
+	if s.idx >= len(s.replies) {
+		return "", nil
+	}
+	r := s.replies[s.idx]
+	s.idx++
+	return r, nil
+}
+
+type toolExecStub struct {
+	tools    []ports.Tool
+	result   string
+	err      error
+	lastName string
+	lastIn   string
+}
+
+func (s *toolExecStub) ListTools(context.Context) ([]ports.Tool, error) {
+	return s.tools, nil
+}
+
+func (s *toolExecStub) ExecuteTool(_ context.Context, name, input string) (string, error) {
+	s.lastName = name
+	s.lastIn = input
+	if s.err != nil {
+		return "", s.err
+	}
+	return s.result, nil
+}
+
+func TestAsk_FinalWithoutToolCall(t *testing.T) {
+	llm := &llmStub{replies: []string{"Hello from orchestrator"}}
+	tools := &toolExecStub{tools: []ports.Tool{{Name: "native.echo", Description: "Echo input"}}}
+	svc := orchestrator.New(llm, tools)
+
+	got, err := svc.Ask(context.Background(), "hello")
+	if err != nil {
+		t.Fatalf("Ask error: %v", err)
+	}
+	if got != "Hello from orchestrator" {
+		t.Errorf("got %q, want %q", got, "Hello from orchestrator")
+	}
+}
+
+func TestAsk_ToolCallThenFinal(t *testing.T) {
+	llm := &llmStub{replies: []string{
+		"TOOL_CALL {\"name\":\"native.echo\",\"input\":\"ping\"}",
+		"Tool says ping",
+	}}
+	tools := &toolExecStub{tools: []ports.Tool{{Name: "native.echo"}}, result: "ping"}
+	svc := orchestrator.New(llm, tools)
+
+	got, err := svc.Ask(context.Background(), "use tool")
+	if err != nil {
+		t.Fatalf("Ask error: %v", err)
+	}
+	if got != "Tool says ping" {
+		t.Errorf("got %q, want %q", got, "Tool says ping")
+	}
+	if tools.lastName != "native.echo" || tools.lastIn != "ping" {
+		t.Errorf("tool call = (%q,%q), want (native.echo,ping)", tools.lastName, tools.lastIn)
+	}
+}
+
+func TestAsk_PropagatesLLMError(t *testing.T) {
+	boom := errors.New("provider down")
+	llm := &llmStub{err: boom}
+	tools := &toolExecStub{}
+	svc := orchestrator.New(llm, tools)
+
+	_, err := svc.Ask(context.Background(), "hello")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !errors.Is(err, boom) {
+		t.Errorf("error = %v, want wrapped %v", err, boom)
+	}
+}
