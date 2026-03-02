@@ -40,6 +40,7 @@ Agents are defined by config files, not hardcoded.`,
 	root.SetErr(out)
 
 	root.AddCommand(newChatCommand(deps, out))
+	root.AddCommand(newReplCommand(deps, out))
 	root.AddCommand(newServeCommand(deps, out))
 
 	return root

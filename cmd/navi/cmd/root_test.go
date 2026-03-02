@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 
@@ -40,8 +41,13 @@ func newDeps(reply string, err error) cmd.Dependencies {
 }
 
 func execute(deps cmd.Dependencies, args ...string) (string, error) {
+	return executeWithInput(deps, strings.NewReader(""), args...)
+}
+
+func executeWithInput(deps cmd.Dependencies, in io.Reader, args ...string) (string, error) {
 	var buf bytes.Buffer
 	root := cmd.NewRootCommand(deps, &buf)
+	root.SetIn(in)
 	root.SetArgs(args)
 	err := root.Execute()
 	return buf.String(), err
@@ -84,6 +90,60 @@ func TestChat_RequiresArgs(t *testing.T) {
 	_, err := execute(newDeps("ok", nil), "chat")
 	if err == nil {
 		t.Fatal("expected error when no args provided")
+	}
+}
+
+// ── repl command ─────────────────────────────────────────────────────────────
+
+func TestRepl_CommandRegistered(t *testing.T) {
+	var buf bytes.Buffer
+	root := cmd.NewRootCommand(newDeps("", nil), &buf)
+	replCmd, _, err := root.Find([]string{"repl"})
+	if err != nil {
+		t.Fatalf("Find repl: %v", err)
+	}
+	if replCmd.Use != "repl" {
+		t.Errorf("Use = %q, want repl", replCmd.Use)
+	}
+}
+
+func TestRepl_OneMessageThenExit(t *testing.T) {
+	in := strings.NewReader("PING\nexit\n")
+	out, err := executeWithInput(newDeps("PONG", nil), in, "repl")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "PONG") {
+		t.Errorf("output %q should contain PONG", out)
+	}
+	if !strings.Contains(out, "Bye.") {
+		t.Errorf("output %q should contain Bye.", out)
+	}
+}
+
+func TestRepl_ChatErrorPrinted(t *testing.T) {
+	in := strings.NewReader("hello\nquit\n")
+	out, err := executeWithInput(newDeps("", errors.New("llm down")), in, "repl")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "error:") {
+		t.Errorf("output %q should contain error prefix", out)
+	}
+	if !strings.Contains(out, "llm down") {
+		t.Errorf("output %q should contain llm down", out)
+	}
+}
+
+func TestRepl_NilChatService(t *testing.T) {
+	deps := newDeps("", nil)
+	deps.Chat = nil
+	_, err := executeWithInput(deps, strings.NewReader("exit\n"), "repl")
+	if err == nil {
+		t.Fatal("expected error for nil chat service")
+	}
+	if !strings.Contains(err.Error(), "chat service is not wired") {
+		t.Errorf("error %q should mention chat service wiring", err.Error())
 	}
 }
 
