@@ -37,6 +37,7 @@ tmp/
 temp/
 .cache/
 coverage
+cov_*
 
 # Build artifacts
 *.o
