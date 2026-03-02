@@ -26,6 +26,15 @@ type stubLLM struct {
 	err   error
 }
 
+type stubSyncer struct {
+	synced int
+	err    error
+}
+
+func (s *stubSyncer) Sync(_ context.Context) (int, error) {
+	return s.synced, s.err
+}
+
 func (s *stubLLM) Chat(_ context.Context, _ []domain.Message) (string, error) {
 	return s.reply, s.err
 }
@@ -178,6 +187,33 @@ func TestSyncAgents_Returns200(t *testing.T) {
 	decodeJSON(t, resp, &body)
 	if _, ok := body["synced"]; !ok {
 		t.Error("response should contain 'synced' field")
+	}
+}
+
+func TestSyncAgents_UsesSyncer(t *testing.T) {
+	srv := newServer(&stubLLM{reply: "x"}, nil)
+	srv.SetAgentSyncer(&stubSyncer{synced: 3})
+
+	resp := do(t, srv, http.MethodPost, "/agents/sync", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200", resp.StatusCode)
+	}
+
+	var body map[string]any
+	decodeJSON(t, resp, &body)
+	if got := int(body["synced"].(float64)); got != 3 {
+		t.Errorf("synced = %d, want 3", got)
+	}
+}
+
+func TestSyncAgents_SyncError_Returns500(t *testing.T) {
+	srv := newServer(&stubLLM{reply: "x"}, nil)
+	srv.SetAgentSyncer(&stubSyncer{err: fmt.Errorf("sync failed")})
+
+	resp := do(t, srv, http.MethodPost, "/agents/sync", nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", resp.StatusCode)
 	}
 }
 

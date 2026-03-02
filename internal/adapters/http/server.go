@@ -5,6 +5,7 @@
 package httpserver
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,7 +27,14 @@ type Server struct {
 	handler http.Handler
 	tasks   *tasksvc.Service
 	agents  *agentsvc.Service
+	syncer  AgentSyncer
 	httpSrv *http.Server
+}
+
+// AgentSyncer represents the use-case required by POST /agents/sync.
+// Adapters can provide concrete implementations (filesystem, git, etc.).
+type AgentSyncer interface {
+	Sync(ctx context.Context) (int, error)
 }
 
 // New wires the two services into a Server and builds the chi router.
@@ -34,6 +42,11 @@ func New(tasks *tasksvc.Service, agents *agentsvc.Service) *Server {
 	s := &Server{tasks: tasks, agents: agents}
 	s.handler = s.buildRouter()
 	return s
+}
+
+// SetAgentSyncer injects the sync dependency for POST /agents/sync.
+func (s *Server) SetAgentSyncer(syncer AgentSyncer) {
+	s.syncer = syncer
 }
 
 // ServeHTTP implements http.Handler, delegating to the chi router.
@@ -140,10 +153,23 @@ func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 
 // POST /agents/sync
 func (s *Server) handleSyncAgents(w http.ResponseWriter, r *http.Request) {
-	// TODO: implement GitHub sync once the agent registry is in place.
+	if s.syncer == nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"synced":  0,
+			"message": "agent sync is not configured",
+		})
+		return
+	}
+
+	n, err := s.syncer.Sync(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"synced":  0,
-		"message": "agent sync not yet implemented",
+		"synced":  n,
+		"message": "agents synced",
 	})
 }
 
