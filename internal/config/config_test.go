@@ -70,8 +70,8 @@ func TestLoadFrom_MissingFile_ReturnsDefault(t *testing.T) {
 
 func TestLoadFrom_ValidFile_AllProviders(t *testing.T) {
 	providers := []struct {
-		name    string
-		apiEnv  string
+		name   string
+		apiEnv string
 	}{
 		{config.ProviderNVIDIA, "NVIDIA_API_KEY"},
 		{config.ProviderOpenAI, "OPENAI_API_KEY"},

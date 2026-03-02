@@ -8,8 +8,11 @@ import (
 	"testing"
 
 	"navi/cmd/navi/cmd"
+	"navi/internal/adapters/persistence/memory"
 	"navi/internal/core/domain"
+	agentsvc "navi/internal/core/services/agent"
 	"navi/internal/core/services/chat"
+	tasksvc "navi/internal/core/services/task"
 )
 
 // stubLLM satisfies ports.LLMPort for wiring a real chat.Service in tests.
@@ -22,9 +25,17 @@ func (s *stubLLM) Chat(_ context.Context, _ []domain.Message) (string, error) {
 	return s.reply, s.err
 }
 
+// newDeps wires all services so no field in Dependencies is nil.
+// Tasks and Agents use in-memory repos so no real I/O occurs.
 func newDeps(reply string, err error) cmd.Dependencies {
+	llm := &stubLLM{reply: reply, err: err}
+	chatService := chat.New(llm)
+	taskService := tasksvc.New(memory.NewTaskRepository(), chatService)
+	agentService := agentsvc.New(memory.NewAgentRepository(nil))
 	return cmd.Dependencies{
-		Chat: chat.New(&stubLLM{reply: reply, err: err}),
+		Chat:   chatService,
+		Tasks:  taskService,
+		Agents: agentService,
 	}
 }
 
@@ -77,24 +88,43 @@ func TestChat_RequiresArgs(t *testing.T) {
 }
 
 // ── serve command ─────────────────────────────────────────────────────────────
+// The serve command starts a real, blocking HTTP server, so we do NOT invoke
+// it end-to-end here. Full HTTP handler coverage lives in
+// internal/adapters/http/server_test.go.
+// These tests verify command registration and flag configuration only.
 
-func TestServe_Runs(t *testing.T) {
-	out, err := execute(newDeps("", nil), "serve")
+func TestServe_CommandRegistered(t *testing.T) {
+	var buf bytes.Buffer
+	root := cmd.NewRootCommand(newDeps("", nil), &buf)
+	serveCmd, _, err := root.Find([]string{"serve"})
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("Find serve: %v", err)
 	}
-	if !strings.Contains(out, "navi server") {
-		t.Errorf("output %q should mention 'navi server'", out)
+	if serveCmd.Use != "serve" {
+		t.Errorf("Use = %q, want serve", serveCmd.Use)
 	}
 }
 
-func TestServe_CustomPort(t *testing.T) {
-	out, err := execute(newDeps("", nil), "serve", "--port", "9090")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+func TestServe_PortFlagDefaultIs8080(t *testing.T) {
+	var buf bytes.Buffer
+	root := cmd.NewRootCommand(newDeps("", nil), &buf)
+	serveCmd, _, _ := root.Find([]string{"serve"})
+	f := serveCmd.Flags().Lookup("port")
+	if f == nil {
+		t.Fatal("--port flag not registered")
 	}
-	if !strings.Contains(out, "9090") {
-		t.Errorf("output %q should contain port 9090", out)
+	if f.DefValue != "8080" {
+		t.Errorf("default port = %q, want 8080", f.DefValue)
+	}
+}
+
+func TestServe_PortFlagShorthand(t *testing.T) {
+	var buf bytes.Buffer
+	root := cmd.NewRootCommand(newDeps("", nil), &buf)
+	serveCmd, _, _ := root.Find([]string{"serve"})
+	f := serveCmd.Flags().ShorthandLookup("p")
+	if f == nil {
+		t.Fatal("-p shorthand not registered")
 	}
 }
 

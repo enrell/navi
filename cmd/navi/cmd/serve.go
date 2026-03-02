@@ -5,18 +5,22 @@ import (
 	"io"
 
 	"github.com/spf13/cobra"
+
+	httpserver "navi/internal/adapters/http"
 )
 
-func newServeCommand(out io.Writer) *cobra.Command {
+func newServeCommand(deps Dependencies, out io.Writer) *cobra.Command {
 	var port int
 
 	cmd := &cobra.Command{
 		Use:   "serve",
 		Short: "Start the REST API server",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// TODO(phase-1): wire the HTTP adapter and start listening.
-			fmt.Fprintf(out, "navi server starting on :%d (not yet implemented)\n", port)
-			return nil
+			addr := fmt.Sprintf(":%d", port)
+			fmt.Fprintf(out, "navi API server listening on %s\n", addr)
+
+			srv := httpserver.New(deps.Tasks, deps.Agents)
+			return srv.Start(addr)
 		},
 	}
 

@@ -10,13 +10,17 @@ import (
 
 	"github.com/spf13/cobra"
 
+	agentsvc "navi/internal/core/services/agent"
 	"navi/internal/core/services/chat"
+	tasksvc "navi/internal/core/services/task"
 )
 
 // Dependencies carries the wired application services into the command tree.
 // Adding a new service? Add a field here — commands stay clean.
 type Dependencies struct {
-	Chat *chat.Service
+	Chat   *chat.Service
+	Tasks  *tasksvc.Service
+	Agents *agentsvc.Service
 }
 
 // NewRootCommand builds and returns the fully configured cobra command tree.
@@ -36,7 +40,7 @@ Agents are defined by config files, not hardcoded.`,
 	root.SetErr(out)
 
 	root.AddCommand(newChatCommand(deps, out))
-	root.AddCommand(newServeCommand(out))
+	root.AddCommand(newServeCommand(deps, out))
 
 	return root
 }

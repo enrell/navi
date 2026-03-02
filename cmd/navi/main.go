@@ -14,8 +14,11 @@ import (
 
 	navcmd "navi/cmd/navi/cmd"
 	llmadapter "navi/internal/adapters/llm/openai"
+	"navi/internal/adapters/persistence/memory"
 	"navi/internal/config"
+	agentsvc "navi/internal/core/services/agent"
 	"navi/internal/core/services/chat"
+	tasksvc "navi/internal/core/services/task"
 	llmpkg "navi/pkg/llm"
 	pkgopenai "navi/pkg/llm/openai"
 )
@@ -39,8 +42,17 @@ func run(args []string, out io.Writer) error {
 	adapter := llmadapter.New(llmCfg)
 	chatService := chat.New(adapter)
 
+	// Wire: in-memory repos → task / agent services
+	// (SQLite persistence is a future iteration)
+	taskRepo := memory.NewTaskRepository()
+	agentRepo := memory.NewAgentRepository(nil) // no agents registered yet
+	taskService := tasksvc.New(taskRepo, chatService)
+	agentService := agentsvc.New(agentRepo)
+
 	deps := navcmd.Dependencies{
-		Chat: chatService,
+		Chat:   chatService,
+		Tasks:  taskService,
+		Agents: agentService,
 	}
 
 	root := navcmd.NewRootCommand(deps, out)
