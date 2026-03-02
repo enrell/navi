@@ -26,7 +26,7 @@ Navi is an open-source AI orchestrator that connects disparate tools, scripts, a
 ```
 ┌─────────────────────────────────────────────┐
 │                 ADAPTERS                    │
-│   (LLM Provider, Database, OS Scripts)      │
+│   (LLM Provider, Database, OS Scripts)     │
 ├─────────────────────────────────────────────┤
 │              CORE LOGIC                     │
 │   (Orchestration Intelligence)              │
@@ -41,7 +41,7 @@ Business logic is completely isolated from external concerns. This means:
 - Swappable LLM providers (OpenAI, Anthropic, Ollama)
 - Swappable isolation backends (Docker, Bubblewrap, Native)
 - Swappable storage (SQLite, Postgres, S3)
-- swappable UIs (TUI, REST API, Discord, Telegram)
+- Swappable UIs (TUI, REST API, Discord, Telegram)
 
 ### Runtime Engine — Agents Are Data
 
@@ -61,6 +61,25 @@ Benefits:
 - **LLM-generatable** — ask Navi to design a new agent for you
 - **Composable** — route tasks to agents by their capability set
 
+### Default Agents
+
+Default agents are stored in `configs/agents/` in the repository. During installation, they are copied to `~/.config/navi/agents/`.
+
+#### The Navi Solution: Hybrid Storage Model
+
+Navi uses **filesystem as the interface** and **SQLite as the validator** (Checksum Store).
+
+**Storage**: Agents in `~/.config/navi/agents/` as `.toml` and `.md` files.
+
+**Validation**: SQLite contains:
+- `agent_id`, `path`, `file_hash`, `signature`, `status`
+
+**Security Features**:
+- **Manual Edit Detection**: If you edit an agent file manually (Neovim, etc.), Navi detects via fsnotify and prompts: *"Agent X was modified. Authorize with your key?"*
+- **Injection Blocking**: New agents without SQLite record are marked **Untrusted** and won't load until validated via SRP
+
+To update: Navi prompts you on startup or call `POST /agents/sync`.
+
 ### Capability-Based Authority
 
 Navi doesn't give blanket access. Every operation is granted explicit capabilities:
@@ -79,18 +98,53 @@ Navi doesn't give blanket access. Every operation is granted explicit capabiliti
 
 This prevents accidental damage from LLM hallucinations.
 
-## Interaction Modes
+## Entry Points & Communication
 
-Navi supports multiple entry points:
+Navi supports multiple entry points, each using the appropriate communication protocol:
 
-| Mode | Description | Authentication |
-|------|-------------|----------------|
-| **TUI** | Terminal UI with Bubble Tea | Local token, biometric, password |
-| **REST API** | HTTP API for integrations | API keys, JWT, OAuth |
-| **Discord Bot** | Secure server automation | Discord OAuth + user linking |
-| **Telegram Bot** | Remote task triggering | Telegram user ID + PIN |
+| Entry Point | Communication | Security |
+|-------------|---------------|----------|
+| **TUI** (local) | gRPC via Unix Domain Socket (`/tmp/navi.sock`) | Unix file permissions |
+| **Web UI** (remote) | REST (grpc-gateway) + WebSocket | SRP + Token + HTTPS |
+| **API/Bots** (remote) | REST | API Keys / PASETO + HTTPS |
+| **Desktop App** | gRPC or REST (local) | Token saved in OS Keyring |
 
-All modes require authentication. No exceptions.
+### Why Unix Domain Sockets?
+
+For local communication (TUI, Desktop App), Navi uses **Unix Domain Sockets** instead of TCP:
+
+- **Faster**: Zero network overhead, direct kernel-to-kernel
+- **More Secure**: Protected by Unix file permissions — only processes with read access can connect
+- **No MitM**: Local-only, impossible to intercept from another machine
+
+```
+# Socket location
+/tmp/navi.sock
+
+# Permissions (example)
+srw-rw---- 1 enrell enrell 0 /tmp/navi.sock
+```
+
+### Why gRPC + REST + WebSocket?
+
+- **gRPC**: Native streaming, efficient binary protocol, ideal for local + real-time
+- **REST**: Standard HTTP, easy to proxy, great for CRUD operations
+- **WebSocket**: Full-duplex communication for LLM streaming in browsers
+
+## Authentication
+
+### Local Access (TUI)
+
+- **Unix Domain Socket**: Protected by file permissions
+- No additional auth required if user has socket access
+
+### Remote Access (Web UI, API)
+
+| Mode | Authentication |
+|------|----------------|
+| Web UI | SRP (Secure Remote Password) + Token Opaco (Cookie HttpOnly) |
+| API / Bots | API Keys (hashed) or PASETO |
+| Desktop App | Token stored in OS Keyring |
 
 ## Isolation Backends
 
@@ -101,6 +155,14 @@ Choose your isolation strategy:
 | **Docker** | VPS, multi-user, production | Strong isolation, cross-platform | Heavier, requires daemon |
 | **Bubblewrap** | Linux desktop | Lightweight, no daemon | Linux-only |
 | **Native Restricted** | Simple tasks, trusted | Minimal overhead | Weaker isolation |
+
+## Agent Sync System
+
+1. **Installation**: Setup script pulls default agents from GitHub
+2. **Startup**: Navi checks for updates
+3. **Prompt**: "Update agents from GitHub? (y/N)"
+4. **Sync**: API endpoint `POST /agents/sync` pulls latest changes
+5. **Hot-reload**: Agents updated without restart
 
 ## Project Status
 
@@ -123,7 +185,7 @@ Navi is built with the belief that:
 - **GitHub**: https://github.com/enrell/navi
 - **Discord**: https://discord.gg/eNsMFGZU
 - **License**: MIT
-- **Contributing**: See [CONTRIBUTING.md](../CONTRIBUTING.md) (coming soon)
+- **Contributing**: See [CONTRIBUTING.md](../CONTRIBUTING.md)
 
 ---
 

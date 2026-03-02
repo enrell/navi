@@ -1,0 +1,17 @@
+mode: set
+navi/pkg/llm/openai/client.go:63.30,68.2 1 1
+navi/pkg/llm/openai/client.go:71.80,76.16 2 1
+navi/pkg/llm/openai/client.go:76.16,78.3 1 0
+navi/pkg/llm/openai/client.go:80.2,86.16 2 1
+navi/pkg/llm/openai/client.go:86.16,88.3 1 0
+navi/pkg/llm/openai/client.go:90.2,94.16 4 1
+navi/pkg/llm/openai/client.go:94.16,96.3 1 1
+navi/pkg/llm/openai/client.go:97.2,100.16 3 1
+navi/pkg/llm/openai/client.go:100.16,102.3 1 0
+navi/pkg/llm/openai/client.go:104.2,105.49 2 1
+navi/pkg/llm/openai/client.go:105.49,107.3 1 1
+navi/pkg/llm/openai/client.go:109.2,109.21 1 1
+navi/pkg/llm/openai/client.go:109.21,111.3 1 1
+navi/pkg/llm/openai/client.go:113.2,113.26 1 1
+navi/pkg/llm/openai/client.go:113.26,115.3 1 1
+navi/pkg/llm/openai/client.go:117.2,117.43 1 1

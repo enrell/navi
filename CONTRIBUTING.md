@@ -47,10 +47,18 @@ Harassment or discrimination in any form will not be tolerated.
    go test ./...
    ```
 
-4. **Run the TUI**
-   ```bash
-   ./navi tui
-   ```
+ 4. **Run the REST API server**
+    ```bash
+    ./navi serve
+    # or
+    go run cmd/navi/main.go serve
+    ```
+
+    **Alternative interfaces:**
+    ```bash
+    ./navi repl         # Terminal REPL
+    ./navi chat <msg>   # Single chat message
+    ```
 
 ### Development Tools
 

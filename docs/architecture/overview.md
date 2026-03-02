@@ -2,7 +2,9 @@
 
 Navi is built on **Hexagonal Architecture** (Ports & Adapters) with a **GenericAgent Runtime Engine** at its core. Agents, tools, and skills are **pure data** (`config.toml` + `AGENT.md`) — the engine executes them without recompilation.
 
-## Why Hexagonal Architecture?
+## Architecture Principles
+
+### 1. Hexagonal Architecture
 
 The AI landscape is volatile. New models emerge, APIs change, and frameworks evolve. Hexagonal architecture protects the core business logic from these external changes by:
 
@@ -10,30 +12,6 @@ The AI landscape is volatile. New models emerge, APIs change, and frameworks evo
 2. **Defining clear contracts** via interfaces (ports)
 3. **Enabling swappable implementations** via adapters
 4. **Making testing easy** by mocking ports
-
-### The Problem Hexagonal Solves
-
-Without hexagonal architecture, you might write:
-
-```go
-// BAD: Core logic tied to specific providers
-func ProcessRequest(input string) (string, error) {
-    // Direct OpenAI API call
-    resp, err := openaiClient.CreateCompletion(input)
-    if err != nil {
-        return "", err
-    }
-
-    // Direct Docker command
-    cmd := exec.Command("docker", "run", "...")
-    output, err := cmd.Output()
-    // ...
-}
-```
-
-This makes testing impossible, changing providers painful, and introduces tight coupling.
-
-### The Hexagonal Solution
 
 ```
 ┌─────────────────────────────────────────────┐
@@ -54,9 +32,25 @@ This makes testing impossible, changing providers painful, and introduces tight 
 
 The core only knows about interfaces. Adapters implement those interfaces. Entry points (CLI, TUI, API) use the core.
 
+### 2. Agents Are Data
+
+Every agent is defined by two files:
+
+```
+~/.config/navi/agents/<name>/
+├── config.toml   ← LLM, capabilities, isolation backend
+└── AGENT.md      ← system prompt (the agent's "brain")
+```
+
+Create any specialist (researcher, coder, planner, security auditor…) by writing config files — **no recompilation**.
+
+### 3. Default Agents
+
+Default agents are stored in `configs/agents/` in the repository. During installation, a setup script pulls these defaults from the GitHub repository. Users can customize them in their local `~/.config/navi/agents/` directory.
+
 ## Directory Structure
 
-```text
+```
 cmd/navi/              — entry point; CLI dispatch + wiring
 internal/
   core/
@@ -73,14 +67,48 @@ internal/
       bubblewrap/      — bwrap user namespace sandbox
     registry/localfs/  — reads/writes ~/.config/navi/agents/*/
     storage/sqlite/    — event log + agent persistence (GORM)
-  ui/tui/              — terminal dashboard
+  ui/
+    repl/              — terminal REPL
+    api/               — REST API server
 pkg/                   — shared utilities
-configs/agents/        — example agent configs
-  researcher/config.toml
-  researcher/AGENT.md
-  coder/config.toml
-  coder/AGENT.md
+configs/agents/        — default agents (embedded in binary)
+  orchestrator/
+  coder/
+  researcher/
 ```
+
+## Entry Points & Communication
+
+Navi supports multiple entry points, each using the appropriate communication protocol:
+
+| Entry Point | Communication | Security |
+|-------------|---------------|----------|
+| **TUI** (local) | gRPC via Unix Domain Socket (`/tmp/navi.sock`) | Unix file permissions |
+| **Web UI** (remote) | REST (grpc-gateway) + WebSocket | SRP + Token + HTTPS |
+| **API/Bots** (remote) | REST | API Keys / PASETO + HTTPS |
+| **Desktop App** | gRPC or REST (local) | Token saved in OS Keyring |
+
+### Why Unix Domain Sockets?
+
+For local communication, Navi uses **Unix Domain Sockets** instead of TCP:
+
+- **Faster**: Zero network overhead, direct kernel-to-kernel
+- **More Secure**: Protected by Unix file permissions — only processes with read access can connect
+- **No MitM**: Local-only, impossible to intercept from another machine
+
+```
+# Socket location
+/tmp/navi.sock
+
+# Permissions (example)
+srw-rw---- 1 enrell enrell 0 /tmp/navi.sock
+```
+
+### Why gRPC + REST + WebSocket?
+
+- **gRPC**: Native streaming, efficient binary protocol, ideal for local + real-time
+- **REST**: Standard HTTP, easy to proxy, great for CRUD operations
+- **WebSocket**: Full-duplex communication for LLM streaming in browsers
 
 ## Core Components
 
@@ -162,7 +190,7 @@ type AgentConfigRegistry interface {
 }
 ```
 
-### 4. Adapters (Implementations)
+### 5. Adapters (Implementations)
 
 Adapters implement ports for specific technologies. They handle:
 - API authentication
@@ -171,113 +199,6 @@ Adapters implement ports for specific technologies. They handle:
 - Connection management
 
 Example: `OpenAIAdapter` implements `LLMPort` by wrapping the official OpenAI Go client and translating Navi's `Prompt` type to OpenAI's request format.
-
-### 5. Entry Points (CLI, TUI, API)
-
-Entry points are the user-facing interfaces. They:
-- Parse user input
-- Call the orchestrator
-- Display results
-- Handle authentication
-
-Multiple entry points can coexist because the core is UI-agnostic.
-
-## Data Flow
-
-### Typical Request Flow
-
-```
-User → CLI/TUI/API → Auth Middleware → Orchestrator → Planner Agent
-   → [Researcher + Coder in parallel] → Executor → Verifier
-   → Result aggregation → Response to user
-   → Audit log entry written
-```
-
-### Capability Enforcement
-
-Every operation goes through the capability checker:
-
-```go
-func (o *Orchestrator) ExecuteTask(ctx context.Context, task Task) (Result, error) {
-    user := auth.UserFromContext(ctx)
-
-    // Check if user has permission for this task type
-    if !o.auth.CheckPermission(user, task.Type, "execute") {
-        return Result{}, ErrPermissionDenied
-    }
-
-    // Translate task capabilities to isolation constraints
-    caps := o.translateCapabilities(task.Capabilities)
-
-    // Execute with enforced constraints
-    result, err := o.isolation.Execute(ctx, task.Command, caps)
-    if err != nil {
-        o.logger.Log("execution_failed", user.ID, task.ID, err)
-        return Result{}, err
-    }
-
-    // Audit everything
-    o.repository.SaveEvent(ctx, Event{
-        UserID:    user.ID,
-        Action:    "task_executed",
-        TaskID:    task.ID,
-        Result:    result,
-    })
-
-    return result, nil
-}
-```
-
-## Multi-Agent Coordination
-
-### Task Delegation Flow
-
-```
-┌─────────────┐
-│   User      │ "Build a REST API with auth"
-└──────┬──────┘
-       │
-       ▼
-┌─────────────────────┐
-│   Orchestrator      │
-└──────┬──────────────┘
-       │
-       ├───────────────┐
-       │ Planner Agent │ (breaks down task)
-       └───────────────┘
-              │
-              ├─► Research auth patterns ──► Researcher
-              ├─► Design API structure   ──► Planner (again)
-              ├─► Implement endpoints    ──► Coder (parallel)
-              ├─► Write tests            ──► Coder + Verifier
-              └─► Build & run            ──► Executor
-```
-
-### Parallel Execution
-
-Navi executes independent tasks concurrently:
-
-```go
-func (o *Orchestrator) ExecutePlan(ctx context.Context, plan Plan) (PlanResult, error) {
-    var wg sync.WaitGroup
-    results := make(chan TaskResult, len(plan.Steps))
-
-    for _, step := range plan.Steps {
-        if step.DependenciesMet(plan) {
-            wg.Add(1)
-            go func(s Task) {
-                defer wg.Done()
-                res := o.executeStep(ctx, s)
-                results <- res
-            }(step)
-        }
-    }
-
-    wg.Wait()
-    close(results)
-    return aggregate(results), nil
-}
-```
 
 ## Security Boundaries
 
@@ -289,6 +210,29 @@ func (o *Orchestrator) ExecutePlan(ctx context.Context, plan Plan) (PlanResult, 
 4. **Capability Enforcement**: Each operation is explicitly granted/denied
 5. **Authentication**: Every request must be authenticated
 
+### Local Communication Security
+
+For TUI and local access, Navi uses **Unix Domain Sockets** with file permissions:
+
+```
+/tmp/navi.sock — Only accessible to the owner
+```
+
+This provides:
+- **Process-level isolation**: Only users with socket permission can connect
+- **No network exposure**: Not even localhost:port is opened
+- **OS-enforced security**: Relies on Unix permissions, not application code
+
+### Remote Communication Security
+
+For Web UI and API access:
+
+| Layer | Technology |
+|-------|-----------|
+| Authentication | SRP (Secure Remote Password) + Token Opaco |
+| Transport | HTTPS / mTLS |
+| Real-time | WebSocket with token in initial handshake |
+
 ### Threat Model Addressed
 
 | Threat | Mitigation |
@@ -298,6 +242,71 @@ func (o *Orchestrator) ExecutePlan(ctx context.Context, plan Plan) (PlanResult, 
 | Credential leakage | Credentials never passed to agents; access via capability grants |
 | Prompt injection | Auth checks before every operation; no trusted input |
 | Privilege escalation | Agents run with minimal privileges; no root unless explicitly granted |
+| Local MitM attack | Unix Domain Socket — no network exposure |
+
+## Agent Sync System
+
+### The Navi Solution: Hybrid Storage Model
+
+Navi uses **filesystem as the interface** and **SQLite as the validator** (Checksum Store).
+
+#### How It Works
+
+**Storage**: Agents live in `~/.config/navi/agents/` as `.toml` and `.md` files.
+
+**Validation (SQLite)**: Navi maintains an internal SQLite containing only:
+- `agent_id` - Unique identifier
+- `path` - File path
+- `file_hash` - SHA-256 hash of the agent files
+- `signature` - Cryptographic signature (optional, for verified agents)
+- `status` - Trusted / Untrusted / Modified
+
+#### Edit Flow
+
+1. **Via Interface**: When editing through Navi's interface (with hardware key/password), Navi updates the file on disk and generates a new hash in SQLite.
+
+2. **Manual Edit (Neovim, etc.)**: If you edit manually:
+   - Navi detects the change (via fsnotify or on boot)
+   - Prompts: *"Agent X was manually modified. Do you want to authorize the new capabilities with your key?"*
+   - User authenticates via SRP to validate
+
+#### Injection Blocking
+
+If a new agent appears in the folder **without** a corresponding SQLite record:
+- Navi marks it as **Untrusted**
+- Refuses to load it until explicitly validated via authenticated interface (SRP)
+
+This prevents malicious agents from being injected into the system.
+
+### Default Agents Flow
+
+```
+configs/agents/ (repository)
+        │
+        ▼ git pull / install
+~/.config/navi/agents/ (user local)
+        │
+        ▼ fsnotify / boot check
+~/.config/navi/agents.db (SQLite validator)
+        │
+        ▼ hash validation
+    Trusted / Untrusted / Modified
+```
+
+### Installation Flow
+
+1. User runs `navi setup` or installs via package manager
+2. Default agents are placed in `~/.config/navi/agents/`
+3. SQLite database created with agent records
+4. Default agents marked as **Trusted**
+
+### Update Flow
+
+1. Navi starts and checks for agent changes (fsnotify)
+2. If changes detected: prompt user *"Update agents? (y/N)"*
+3. If approved: API endpoint `POST /agents/sync` pulls latest from GitHub
+4. New hash calculated and stored in SQLite
+5. Agents hot-reloaded without restart
 
 ## Storage Architecture
 
@@ -334,91 +343,6 @@ Workspaces track:
 - Agent session state
 - Checkpoints for rollback
 
-## Communication Protocols
-
-### Agent-to-Agent
-
-Agents communicate via a message bus:
-
-```go
-type AgentMessage struct {
-    From    string      // Agent ID
-    To      string      // Agent ID or "orchestrator"
-    Type    string      // "request", "response", "event"
-    Payload interface{} // Typed payload
-}
-
-// Orchestrator routes messages based on To field
-```
-
-Messages are persisted to the event log for observability.
-
-### User-to-Orchestrator
-
-Different entry points use different protocols:
-- **CLI/TUI**: Direct function calls (same process)
-- **REST API**: HTTP POST/GET with JWT
-- **gRPC**: Bidirectional streaming for real-time updates
-- **Bots**: Webhooks or long-polling
-
-All require authentication and capability checks.
-
-## Scalability Considerations
-
-### Horizontal Scaling
-
-The orchestrator can be distributed:
-- Multiple orchestrator instances behind a load balancer
-- Shared database (SQLite doesn't support clustering, so Postgres for distributed)
-- Message queue (RabbitMQ, NATS) for inter-agent communication
-- Agent workers can run on separate machines
-
-Currently, Navi is single-node, but architecture supports future distribution.
-
-### Performance Optimizations
-
-- **Caching**: LLM responses can be cached by prompt hash
-- **Checkpointing**: Long-running tasks can be paused and resumed
-- **Streaming**: LLM responses streamed to UI as they arrive
-- **Lazy loading**: Heavy adapters loaded on-demand
-
-## Observability
-
-### Metrics to Track
-
-- Task queue depth
-- Agent latency (per agent type)
-- LLM token usage
-- Adapter errors
-- Capability denials
-- Workspace changes
-
-### Logging Strategy
-
-- **Structured logging**: JSON logs with fields (`timestamp`, `level`, `component`, `user_id`, `task_id`)
-- **Correlation IDs**: Every request gets ID, propagated through all logs
-- **Sensitive data redaction**: Never log API keys, tokens, or private data
-
-## Future Extensions
-
-The hexagonal architecture makes adding new components straightforward:
-
-### Adding a New LLM Provider
-
-1. Implement `LLMPort` in `internal/adapters/<provider>_adapter.go`
-2. Register it in the factory
-3. Configure via `config.yaml`
-
-No core changes needed.
-
-### Adding a New Interaction Mode
-
-1. Create a new package in `cmd/` or `internal/bots/`
-2. Call the orchestrator via its public API
-3. Handle authentication and UI
-
-Again, no core changes needed.
-
 ## Key Design Decisions
 
 ### Why Not a Plugin Marketplace?
@@ -436,6 +360,7 @@ External plugin marketplaces (npm-style, VS Code extensions) open vectors for su
 - **Binary deployment**: One binary, no runtime
 - **Ecosystem**: Excellent standard library, great for CLIs and servers
 - **Tooling**: `go test`, `go fmt`, `go vet` are excellent
+- **gRPC support**: Native, first-class
 
 ### Why SQLite?
 
@@ -452,3 +377,5 @@ Future: Postgres for distributed deployments.
 - [Hexagonal Architecture](https://alistair.cockburn.us/hexagonal-architecture/)
 - [Clean Architecture by Robert C. Martin](https://blog.cleancoder.com/uncle-bob/2012/08/13/the-clean-architecture.html)
 - [Ports and Adapters pattern](https://en.wikipedia.org/wiki/Hexagonal_architecture_(software))
+- [Unix Domain Sockets - Linux man pages](https://man7.org/linux/man-pages/man7/unix.7.html)
+- [gRPC](https://grpc.io/)

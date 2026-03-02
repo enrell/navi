@@ -194,12 +194,26 @@ Authority is expressed as **explicit capabilities**, enforced by the chosen isol
 
 | Mode | Authentication Methods |
 |------|------------------------|
-| **TUI** | Local token, biometric, or password |
 | **REST API** | API keys, JWT tokens, OAuth |
+| **REPL** | Local token or password |
 | **Discord Bot** | Discord OAuth + user linking |
 | **Telegram Bot** | Telegram user ID + PIN |
 
-This ensures that even local TUI access is audited and reversible.
+---
+
+## Development Strategy
+
+Navi is being developed in phases to ensure a solid foundation:
+
+### Phase 1: REST API First (Current)
+The REST API is the primary interface during initial development. This approach:
+- **Facilitates rapid development**: External tools and scripts can easily integrate
+- **Simplifies debugging**: HTTP is easier to inspect than terminal UI
+- **Enables automation**: CI/CD pipelines and external services can submit tasks
+- **Separation of concerns**: Backend (orchestrator/agents) is decoupled from presentation
+
+### Phase 2: TUI (Planned)
+A Terminal User Interface will be added once the backend is stable.
 
 ---
 
@@ -207,20 +221,20 @@ This ensures that even local TUI access is audited and reversible.
 
 Navi doesn't lock you into a single UI. Choose your interface:
 
-### 1. TUI (Terminal User Interface)
-- Fast, keyboard-friendly interface for terminal dwellers
-- Built with [Bubble Tea](https://github.com/charmbracelet/bubbletea)
-- **Authentication required** (local token or password)
-
-### 2. REST/gRPC API
+### 1. REST API (Default)
 - Full HTTP API for mobile apps and integrations
-- gRPC streaming for real-time updates
-- **Authentication required** (API keys, JWT)
+- **Start**: `navi serve` or just `navi`
+- **Authentication**: API keys, JWT
+
+### 2. REPL (Terminal)
+- Interactive terminal REPL
+- **Start**: `navi repl`
+- **Authentication**: local token or password
 
 ### 3. Messaging Bots
 - **Discord**: Secure server automation
 - **Telegram**: Remote task triggering
-- **Authentication required** (user linking + optional PIN)
+- **Authentication**: user linking + optional PIN
 
 ### 4. Custom Modes
 Define your own interaction mode via the adapter pattern.
@@ -371,60 +385,12 @@ Navi is built around LLM weaknesses, not their strengths:
 - **Language**: Go 1.21+
 - **Architecture**: Hexagonal (Ports & Adapters)
 - **Isolation**: Docker, Bubblewrap, or Native (user choice)
-- **TUI**: [Bubble Tea](https://github.com/charmbracelet/bubbletea)
+- **UI**: REST API (default), REPL, Bubble Tea TUI (planned)
 - **Database**: SQLite (pure Go, no CGO) with WAL mode
-- **API**: Chi router for HTTP, gRPC for streaming
+- **API**: Chi router for HTTP
 - **Authentication**: JWT, API Keys, OAuth adapters
 - **LLM Clients**: OpenAI-compatible API pattern
 - **MCP**: Model Context Protocol support
-
----
-
-## Roadmap
-
-> **Note:** This roadmap is structured for practical, iterative AI-assisted development. We build the testing grounds and basic interaction modes first before tackling complex multi-agent orchestration.
-
-### Phase 1: Foundation & Testability (Current)
-- [x] Architecture design & core interfaces
-- [x] Threat model specification
-- [x] Basic orchestrator implementation
-- [x] First LLM adapter (OpenAI-compatible)
-- [x] Isolation adapter interfaces
-- [ ] **CLI REPL / Playground (To test LLM providers & prompts interactively)**
-
-### Phase 2: Memory & Sandbox Hardening
-- [x] Native restricted sandbox
-- [x] Capability-based authority system
-- [x] Git integration for audit trail
-- [ ] Local Database (SQLite) & Event Log
-- [ ] Chat History persistence
-
-### Phase 3: Minimum Viable Interface
-- [ ] Basic TUI prototype or minimal UI
-- [ ] Provider validation (e.g., Local/Ollama & OpenAI)
-- [ ] Interactive task testing and single-agent validation
-
-### Phase 4: Agent System & Orchestration
-- [ ] Multi-agent coordination
-- [ ] Intelligent task delegation
-- [ ] Parallel execution engine
-- [ ] Inter-agent communication protocol
-
-### Phase 5: Advanced Security & Modes
-- [ ] Docker adapter & Bubblewrap adapter (Linux)
-- [ ] Authentication layer & API key management
-- [ ] Operation mode system
-
-### Phase 6: Integrations & Extensibility
-- [ ] Custom tool registration
-- [ ] MCP layer implementation
-- [ ] REST API skeleton
-- [ ] Discord bot & Telegram bot
-
-### Phase 7: Production Ready
-- [ ] Comprehensive testing & Security audit
-- [ ] Documentation
-- [ ] First stable release
 
 ---
 
