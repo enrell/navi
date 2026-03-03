@@ -34,7 +34,7 @@ type Message struct {
 
 // chatRequest is the JSON body sent to /chat/completions.
 type chatRequest struct {
-	Model    string    `json:"model"`
+	Model    string    `json:"model,omitempty"`
 	Messages []Message `json:"messages"`
 }
 

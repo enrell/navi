@@ -9,6 +9,7 @@ import (
 
 	"navi/internal/core/domain"
 	"navi/internal/core/ports"
+	"navi/internal/telemetry"
 )
 
 const defaultMaxTurns = 4
@@ -54,12 +55,18 @@ func (s *Service) Ask(ctx context.Context, userMessage string) (string, error) {
 // AskWithTrace runs the same loop as Ask and also returns trace events that the
 // TUI can render to make model/tool behavior explicit.
 func (s *Service) AskWithTrace(ctx context.Context, userMessage string) (string, []TraceEvent, error) {
+	ctx, traceID := telemetry.EnsureTraceID(ctx)
+	logger := telemetry.Logger().With("component", "orchestrator", "trace_id", traceID)
+	logger.Info("ask_start", "input_chars", len(userMessage))
+
 	if strings.TrimSpace(userMessage) == "" {
+		logger.Error("ask_invalid_input")
 		return "", nil, fmt.Errorf("orchestrator: message cannot be empty")
 	}
 
 	systemPrompt, err := s.buildSystemPrompt(ctx)
 	if err != nil {
+		logger.Error("build_system_prompt_failed", "error", err.Error())
 		return "", nil, err
 	}
 
@@ -71,10 +78,13 @@ func (s *Service) AskWithTrace(ctx context.Context, userMessage string) (string,
 	}
 
 	for i := 0; i < s.maxTurns; i++ {
+		logger.Info("llm_turn_start", "turn", i+1)
 		reply, err := s.llm.Chat(ctx, messages)
 		if err != nil {
+			logger.Error("llm_turn_failed", "turn", i+1, "error", err.Error())
 			return "", trace, fmt.Errorf("orchestrator: llm: %w", err)
 		}
+		logger.Info("llm_turn_reply", "turn", i+1, "reply_chars", len(reply))
 
 		calls, thinking, ok := parseToolCalls(reply)
 		if !ok {
@@ -82,6 +92,7 @@ func (s *Service) AskWithTrace(ctx context.Context, userMessage string) (string,
 			if finalReply != "" {
 				trace = append(trace, TraceEvent{Type: TraceOrchestrator, Content: finalReply})
 			}
+			logger.Info("ask_completed", "turn", i+1, "tool_calls", 0, "reply_chars", len(finalReply))
 			return finalReply, trace, nil
 		}
 
@@ -92,10 +103,13 @@ func (s *Service) AskWithTrace(ctx context.Context, userMessage string) (string,
 
 		toolResults := make([]string, 0, len(calls))
 		for _, call := range calls {
+			logger.Info("tool_call_requested", "tool", call.Name, "input_chars", len(call.Input))
 			result, err := s.tools.ExecuteTool(ctx, call.Name, call.Input)
 			if err != nil {
+				logger.Error("tool_call_failed", "tool", call.Name, "error", err.Error())
 				result = "tool execution error: " + err.Error()
 			}
+			logger.Info("tool_call_result", "tool", call.Name, "result_chars", len(result))
 
 			trace = append(trace, TraceEvent{Type: TraceToolResponse, Tool: call.Name, Content: result})
 			toolResults = append(toolResults, fmt.Sprintf("TOOL_RESULT name=%s\n%s", call.Name, result))
@@ -109,6 +123,7 @@ func (s *Service) AskWithTrace(ctx context.Context, userMessage string) (string,
 		)
 	}
 
+	logger.Error("ask_max_turns_reached", "max_turns", s.maxTurns)
 	return "", trace, fmt.Errorf("orchestrator: max tool iterations reached")
 }
 

@@ -17,6 +17,7 @@ import (
 
 	"navi/internal/core/domain"
 	"navi/internal/core/ports"
+	"navi/internal/telemetry"
 )
 
 // taskRecord is the SQLite persistence model for domain.Task.
@@ -58,6 +59,7 @@ func NewTaskRepository(dbPath string) (*TaskRepository, error) {
 	if err := db.AutoMigrate(&taskRecord{}); err != nil {
 		return nil, fmt.Errorf("sqlite task repo: migrate: %w", err)
 	}
+	telemetry.Logger().Info("sqlite_task_repo_ready", "db_path", dbPath)
 
 	return &TaskRepository{db: db}, nil
 }
@@ -77,34 +79,43 @@ func (r *TaskRepository) Close() error {
 
 // Save upserts a task by ID.
 func (r *TaskRepository) Save(ctx context.Context, task *domain.Task) error {
+	traceID := telemetry.TraceID(ctx)
 	rec := toRecord(task)
 	if err := r.db.WithContext(ctx).Save(&rec).Error; err != nil {
+		telemetry.Logger().Error("sqlite_task_save_failed", "trace_id", traceID, "task_id", task.ID, "error", err.Error())
 		return fmt.Errorf("sqlite task repo: save %q: %w", task.ID, err)
 	}
+	telemetry.Logger().Info("sqlite_task_saved", "trace_id", traceID, "task_id", task.ID, "status", string(task.Status))
 	return nil
 }
 
 // FindByID returns a task by ID or domain.ErrNotFound.
 func (r *TaskRepository) FindByID(ctx context.Context, id string) (*domain.Task, error) {
+	traceID := telemetry.TraceID(ctx)
 	var rec taskRecord
 	err := r.db.WithContext(ctx).First(&rec, "id = ?", id).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
+		telemetry.Logger().Info("sqlite_task_not_found", "trace_id", traceID, "task_id", id)
 		return nil, fmt.Errorf("%w: task %q", domain.ErrNotFound, id)
 	}
 	if err != nil {
+		telemetry.Logger().Error("sqlite_task_find_failed", "trace_id", traceID, "task_id", id, "error", err.Error())
 		return nil, fmt.Errorf("sqlite task repo: find by id %q: %w", id, err)
 	}
 	t := toDomain(rec)
+	telemetry.Logger().Info("sqlite_task_found", "trace_id", traceID, "task_id", id)
 	return &t, nil
 }
 
 // FindAll returns all tasks ordered by CreatedAt ascending, then ID ascending.
 func (r *TaskRepository) FindAll(ctx context.Context) ([]*domain.Task, error) {
+	traceID := telemetry.TraceID(ctx)
 	var rows []taskRecord
 	if err := r.db.WithContext(ctx).
 		Order("created_at asc").
 		Order("id asc").
 		Find(&rows).Error; err != nil {
+		telemetry.Logger().Error("sqlite_task_find_all_failed", "trace_id", traceID, "error", err.Error())
 		return nil, fmt.Errorf("sqlite task repo: find all: %w", err)
 	}
 
@@ -113,6 +124,7 @@ func (r *TaskRepository) FindAll(ctx context.Context) ([]*domain.Task, error) {
 		t := toDomain(row)
 		out = append(out, &t)
 	}
+	telemetry.Logger().Info("sqlite_task_find_all_done", "trace_id", traceID, "count", len(out))
 	return out, nil
 }
 

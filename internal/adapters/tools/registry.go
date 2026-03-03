@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"navi/internal/core/ports"
+	"navi/internal/telemetry"
 )
 
 type Handler func(ctx context.Context, input string) (string, error)
@@ -30,15 +31,18 @@ func NewRegistry() *Registry {
 func (r *Registry) Register(name, description string, handler Handler) error {
 	name = strings.TrimSpace(name)
 	if name == "" {
+		telemetry.Logger().Error("tool_register_invalid_name")
 		return fmt.Errorf("tools: name cannot be empty")
 	}
 	if handler == nil {
+		telemetry.Logger().Error("tool_register_nil_handler", "tool", name)
 		return fmt.Errorf("tools: handler cannot be nil")
 	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.tools[name] = entry{description: strings.TrimSpace(description), handler: handler}
+	telemetry.Logger().Info("tool_registered", "tool", name)
 	return nil
 }
 
@@ -64,7 +68,16 @@ func (r *Registry) ExecuteTool(ctx context.Context, name, input string) (string,
 	e, ok := r.tools[strings.TrimSpace(name)]
 	r.mu.RUnlock()
 	if !ok {
+		telemetry.Logger().Error("tool_unknown", "tool", name)
 		return "", fmt.Errorf("tools: unknown tool %q", name)
 	}
-	return e.handler(ctx, input)
+	traceID := telemetry.TraceID(ctx)
+	telemetry.Logger().Info("tool_execute", "trace_id", traceID, "tool", name, "input_chars", len(input))
+	result, err := e.handler(ctx, input)
+	if err != nil {
+		telemetry.Logger().Error("tool_execute_failed", "trace_id", traceID, "tool", name, "error", err.Error())
+		return "", err
+	}
+	telemetry.Logger().Info("tool_execute_done", "trace_id", traceID, "tool", name, "result_chars", len(result))
+	return result, nil
 }

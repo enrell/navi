@@ -3,13 +3,10 @@
 # Supported: nvidia | openai | groq | openrouter | ollama
 provider = "nvidia"
 
-# Model name. Leave empty to use the provider's default.
-# NVIDIA default  : meta/llama-3.1-8b-instruct
-# OpenAI default  : gpt-4o-mini
-# Groq default    : llama-3.1-8b-instant
-# OpenRouter def. : meta-llama/llama-3.1-8b-instruct
-# Ollama default  : set explicitly, e.g. "llama3.1:8b"
-model = "meta/llama-3.1-8b-instruct"
+# Model name (optional).
+# If empty, Navi omits the field in the request and your provider/server uses
+# its own fallback/default behavior.
+# model = ""
 
 # Name of the environment variable that holds the API key.
 # The key itself is NOT stored in this file.

@@ -7,12 +7,14 @@ package cmd
 
 import (
 	"io"
+	"strings"
 
 	"github.com/spf13/cobra"
 
 	agentsvc "navi/internal/core/services/agent"
 	"navi/internal/core/services/chat"
 	orchestratorsvc "navi/internal/core/services/orchestrator"
+	"navi/internal/telemetry"
 	tasksvc "navi/internal/core/services/task"
 )
 
@@ -36,6 +38,12 @@ func NewRootCommand(deps Dependencies, out io.Writer) *cobra.Command {
 Agents are defined by config files, not hardcoded.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		PersistentPreRun: func(cmd *cobra.Command, args []string) {
+			telemetry.Logger().Info("command_start", "command", cmd.CommandPath(), "args", strings.Join(args, " "))
+		},
+		PersistentPostRun: func(cmd *cobra.Command, args []string) {
+			telemetry.Logger().Info("command_finish", "command", cmd.CommandPath(), "args", strings.Join(args, " "))
+		},
 	}
 
 	root.SetOut(out)

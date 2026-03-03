@@ -13,6 +13,7 @@ import (
 
 	"navi/internal/core/domain"
 	"navi/internal/core/ports"
+	"navi/internal/telemetry"
 )
 
 // Service executes the chat use case.
@@ -28,7 +29,10 @@ func New(llm ports.LLMPort) *Service {
 
 // Chat sends a single user message and returns the assistant reply.
 func (s *Service) Chat(ctx context.Context, userMessage string) (string, error) {
+	ctx, traceID := telemetry.EnsureTraceID(ctx)
+	telemetry.Logger().Info("chat_start", "trace_id", traceID, "input_chars", len(userMessage))
 	if userMessage == "" {
+		telemetry.Logger().Error("chat_invalid_input", "trace_id", traceID)
 		return "", fmt.Errorf("chat: message cannot be empty")
 	}
 
@@ -38,8 +42,10 @@ func (s *Service) Chat(ctx context.Context, userMessage string) (string, error) 
 
 	reply, err := s.llm.Chat(ctx, messages)
 	if err != nil {
+		telemetry.Logger().Error("chat_llm_failed", "trace_id", traceID, "error", err.Error())
 		return "", fmt.Errorf("chat: %w", err)
 	}
+	telemetry.Logger().Info("chat_done", "trace_id", traceID, "reply_chars", len(reply))
 
 	return reply, nil
 }

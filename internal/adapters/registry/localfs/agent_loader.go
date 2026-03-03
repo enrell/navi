@@ -16,6 +16,7 @@ import (
 	"github.com/BurntSushi/toml"
 
 	"navi/internal/core/domain"
+	"navi/internal/telemetry"
 )
 
 type agentTOML struct {
@@ -33,6 +34,7 @@ type agentTOML struct {
 // Missing roots are ignored; malformed files return an error.
 // If duplicate IDs are found, later roots overwrite earlier ones.
 func LoadGenericAgentsFromRoots(roots []string) ([]*domain.GenericAgent, error) {
+	telemetry.Logger().Info("localfs_load_agents_start", "roots", len(roots))
 	byID := map[string]*domain.GenericAgent{}
 
 	for _, root := range roots {
@@ -43,8 +45,10 @@ func LoadGenericAgentsFromRoots(roots []string) ([]*domain.GenericAgent, error) 
 		entries, err := os.ReadDir(root)
 		if err != nil {
 			if os.IsNotExist(err) {
+				telemetry.Logger().Info("localfs_root_missing", "root", root)
 				continue
 			}
+			telemetry.Logger().Error("localfs_read_root_failed", "root", root, "error", err.Error())
 			return nil, fmt.Errorf("localfs agents: read dir %q: %w", root, err)
 		}
 
@@ -61,11 +65,13 @@ func LoadGenericAgentsFromRoots(roots []string) ([]*domain.GenericAgent, error) 
 				if os.IsNotExist(err) {
 					continue
 				}
+				telemetry.Logger().Error("localfs_read_config_failed", "config", cfgPath, "error", err.Error())
 				return nil, fmt.Errorf("localfs agents: read %q: %w", cfgPath, err)
 			}
 
 			var cfg agentTOML
 			if _, err := toml.Decode(string(cfgData), &cfg); err != nil {
+				telemetry.Logger().Error("localfs_parse_config_failed", "config", cfgPath, "error", err.Error())
 				return nil, fmt.Errorf("localfs agents: parse %q: %w", cfgPath, err)
 			}
 
@@ -92,10 +98,12 @@ func LoadGenericAgentsFromRoots(roots []string) ([]*domain.GenericAgent, error) 
 					// is missing, keep empty prompt; if prompt was explicitly set,
 					// treat it as a hard error.
 					if strings.TrimSpace(cfg.Prompt) != "" {
+						telemetry.Logger().Error("localfs_read_prompt_failed", "prompt", promptPath, "error", err.Error())
 						return nil, fmt.Errorf("localfs agents: read prompt %q: %w", promptPath, err)
 					}
 					promptData = nil
 				} else {
+					telemetry.Logger().Error("localfs_read_prompt_failed", "prompt", promptPath, "error", err.Error())
 					return nil, fmt.Errorf("localfs agents: read prompt %q: %w", promptPath, err)
 				}
 			}
@@ -133,10 +141,12 @@ func LoadGenericAgentsFromRoots(roots []string) ([]*domain.GenericAgent, error) 
 				Status:       status,
 			}, string(promptData))
 			if err != nil {
+				telemetry.Logger().Error("localfs_generic_agent_invalid", "agent_id", agentID, "error", err.Error())
 				return nil, fmt.Errorf("localfs agents: %s: %w", agentID, err)
 			}
 
 			byID[agentID] = ga
+			telemetry.Logger().Info("localfs_agent_loaded", "agent_id", agentID, "type", cfgType)
 		}
 	}
 
@@ -150,6 +160,7 @@ func LoadGenericAgentsFromRoots(roots []string) ([]*domain.GenericAgent, error) 
 	for _, id := range ids {
 		result = append(result, byID[id])
 	}
+	telemetry.Logger().Info("localfs_load_agents_done", "count", len(result))
 	return result, nil
 }
 

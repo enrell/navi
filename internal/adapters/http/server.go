@@ -18,6 +18,7 @@ import (
 
 	"navi/internal/core/domain"
 	agentsvc "navi/internal/core/services/agent"
+	"navi/internal/telemetry"
 	tasksvc "navi/internal/core/services/task"
 )
 
@@ -83,6 +84,7 @@ func (s *Server) buildRouter() http.Handler {
 
 	r.Use(middleware.RequestID)
 	r.Use(middleware.Recoverer)
+	r.Use(s.requestLogMiddleware)
 
 	r.Get("/health", s.handleHealth)
 
@@ -127,33 +129,42 @@ func httpStatus(err error) int {
 
 // GET /health
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	telemetry.Logger().Info("http_health", "trace_id", telemetry.TraceID(r.Context()))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 // GET /agents
 func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {
+	traceID := telemetry.TraceID(r.Context())
 	agents, err := s.agents.List(r.Context())
 	if err != nil {
+		telemetry.Logger().Error("http_list_agents_failed", "trace_id", traceID, "error", err.Error())
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	telemetry.Logger().Info("http_list_agents_done", "trace_id", traceID, "count", len(agents))
 	writeJSON(w, http.StatusOK, agents)
 }
 
 // GET /agents/{id}
 func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
+	traceID := telemetry.TraceID(r.Context())
 	agent, err := s.agents.Get(r.Context(), id)
 	if err != nil {
+		telemetry.Logger().Error("http_get_agent_failed", "trace_id", traceID, "agent_id", id, "error", err.Error())
 		writeError(w, httpStatus(err), err.Error())
 		return
 	}
+	telemetry.Logger().Info("http_get_agent_done", "trace_id", traceID, "agent_id", id)
 	writeJSON(w, http.StatusOK, agent)
 }
 
 // POST /agents/sync
 func (s *Server) handleSyncAgents(w http.ResponseWriter, r *http.Request) {
+	traceID := telemetry.TraceID(r.Context())
 	if s.syncer == nil {
+		telemetry.Logger().Info("http_sync_agents_not_configured", "trace_id", traceID)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"synced":  0,
 			"message": "agent sync is not configured",
@@ -163,9 +174,11 @@ func (s *Server) handleSyncAgents(w http.ResponseWriter, r *http.Request) {
 
 	n, err := s.syncer.Sync(r.Context())
 	if err != nil {
+		telemetry.Logger().Error("http_sync_agents_failed", "trace_id", traceID, "error", err.Error())
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	telemetry.Logger().Info("http_sync_agents_done", "trace_id", traceID, "synced", n)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"synced":  n,
@@ -182,42 +195,80 @@ type createTaskRequest struct {
 
 // POST /tasks
 func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
+	traceID := telemetry.TraceID(r.Context())
 	var req createTaskRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		telemetry.Logger().Error("http_create_task_bad_json", "trace_id", traceID, "error", err.Error())
 		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
 	if req.Prompt == "" {
+		telemetry.Logger().Error("http_create_task_empty_prompt", "trace_id", traceID)
 		writeError(w, http.StatusBadRequest, "prompt must not be empty")
 		return
 	}
 
 	task, err := s.tasks.Create(r.Context(), req.Prompt, req.AgentID)
 	if err != nil {
+		telemetry.Logger().Error("http_create_task_failed", "trace_id", traceID, "error", err.Error())
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	telemetry.Logger().Info("http_create_task_done", "trace_id", traceID, "task_id", task.ID, "status", string(task.Status))
 
 	writeJSON(w, http.StatusCreated, task)
 }
 
 // GET /tasks
 func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
+	traceID := telemetry.TraceID(r.Context())
 	tasks, err := s.tasks.List(r.Context())
 	if err != nil {
+		telemetry.Logger().Error("http_list_tasks_failed", "trace_id", traceID, "error", err.Error())
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	telemetry.Logger().Info("http_list_tasks_done", "trace_id", traceID, "count", len(tasks))
 	writeJSON(w, http.StatusOK, tasks)
 }
 
 // GET /tasks/{id}
 func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
+	traceID := telemetry.TraceID(r.Context())
 	task, err := s.tasks.Get(r.Context(), id)
 	if err != nil {
+		telemetry.Logger().Error("http_get_task_failed", "trace_id", traceID, "task_id", id, "error", err.Error())
 		writeError(w, httpStatus(err), err.Error())
 		return
 	}
+	telemetry.Logger().Info("http_get_task_done", "trace_id", traceID, "task_id", id, "status", string(task.Status))
 	writeJSON(w, http.StatusOK, task)
+}
+
+func (s *Server) requestLogMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
+
+		traceID := middleware.GetReqID(r.Context())
+		if traceID == "" {
+			ctx, generated := telemetry.EnsureTraceID(r.Context())
+			traceID = generated
+			r = r.WithContext(ctx)
+		} else {
+			r = r.WithContext(telemetry.WithTraceID(r.Context(), traceID))
+		}
+
+		telemetry.Logger().Info("http_request_start", "trace_id", traceID, "method", r.Method, "path", r.URL.Path)
+		next.ServeHTTP(ww, r)
+		telemetry.Logger().Info("http_request_done",
+			"trace_id", traceID,
+			"method", r.Method,
+			"path", r.URL.Path,
+			"status", ww.Status(),
+			"bytes", ww.BytesWritten(),
+			"duration_ms", time.Since(start).Milliseconds(),
+		)
+	})
 }

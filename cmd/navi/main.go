@@ -24,6 +24,7 @@ import (
 	"navi/internal/config"
 	"navi/internal/core/services/chat"
 	orchestratorsvc "navi/internal/core/services/orchestrator"
+	"navi/internal/telemetry"
 	llmpkg "navi/pkg/llm"
 	pkgopenai "navi/pkg/llm/openai"
 )
@@ -38,21 +39,35 @@ func main() {
 // run is the testable entry point: it wires all dependencies and executes the
 // cobra command tree. Keeping args and out as parameters makes it injectable.
 func run(args []string, out io.Writer) error {
+	telemetryCloser, err := telemetry.InitDefaultJSONLLogger()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = telemetryCloser()
+	}()
+	telemetry.Logger().Info("app_start", "args", strings.Join(args, " "))
+
 	if err := ensureConfigDir(); err != nil {
+		telemetry.Logger().Error("ensure_config_dir_failed", "error", err.Error())
 		return err
 	}
 	loadedEnvFiles, err := loadEnvironment()
 	if err != nil {
+		telemetry.Logger().Error("load_environment_failed", "error", err.Error())
 		return err
 	}
 	if strings.EqualFold(os.Getenv("NAVI_ENV"), "development") && len(loadedEnvFiles) > 0 {
 		fmt.Fprintf(out, "[dev] loaded env files: %s\n", strings.Join(loadedEnvFiles, ", "))
 	}
+	telemetry.Logger().Info("environment_loaded", "navi_env", os.Getenv("NAVI_ENV"), "files", strings.Join(loadedEnvFiles, ","))
 
 	llmCfg, err := buildLLMConfig()
 	if err != nil {
+		telemetry.Logger().Error("build_llm_config_failed", "error", err.Error())
 		return err
 	}
+	telemetry.Logger().Info("llm_config_resolved", "base_url", llmCfg.BaseURL, "model", llmCfg.Model)
 
 	// Wire: pkg HTTP client → adapter (satisfies LLMPort) → chat service
 	adapter := llmadapter.New(llmCfg)
@@ -85,7 +100,13 @@ func run(args []string, out io.Writer) error {
 
 	root := navcmd.NewRootCommand(deps, out)
 	root.SetArgs(args)
-	return root.Execute()
+	err = root.Execute()
+	if err != nil {
+		telemetry.Logger().Error("command_execute_failed", "error", err.Error())
+		return err
+	}
+	telemetry.Logger().Info("app_stop")
+	return nil
 }
 
 // configPath is a seam for tests that need to simulate config.Path() failures.
@@ -212,11 +233,7 @@ func providerPreset(cfg config.Config, apiKey string) pkgopenai.Config {
 	case config.ProviderOpenRouter:
 		preset = llmpkg.OpenRouter(apiKey)
 	case config.ProviderOllama:
-		model := llm.Model
-		if model == "" {
-			model = "llama3.1:8b"
-		}
-		preset = llmpkg.Ollama(model)
+		preset = llmpkg.Ollama(llm.Model)
 	default: // config.ProviderNVIDIA and "" (empty = NVIDIA)
 		preset = llmpkg.NVIDIA(apiKey)
 	}

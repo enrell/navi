@@ -81,6 +81,27 @@ func TestChat_RequestBody(t *testing.T) {
 	}
 }
 
+func TestChat_RequestBody_OmitsEmptyModel(t *testing.T) {
+	var body map[string]any
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{
+				{"message": map[string]any{"role": "assistant", "content": "ok"}},
+			},
+		})
+	}))
+	defer ts.Close()
+
+	client := openai.New(openai.Config{BaseURL: ts.URL, APIKey: "k", Model: ""})
+	_, _ = client.Chat(context.Background(), []openai.Message{{Role: "user", Content: "hello"}})
+
+	if _, ok := body["model"]; ok {
+		t.Fatalf("model should be omitted when empty, got body: %+v", body)
+	}
+}
+
 func TestChat_APIError(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

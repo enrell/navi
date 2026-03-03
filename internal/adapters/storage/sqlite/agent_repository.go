@@ -13,6 +13,7 @@ import (
 
 	"navi/internal/core/domain"
 	"navi/internal/core/ports"
+	"navi/internal/telemetry"
 )
 
 // agentRecord is the SQLite persistence model for domain.Agent.
@@ -53,6 +54,7 @@ func NewAgentRepository(dbPath string) (*AgentRepository, error) {
 	if err := db.AutoMigrate(&agentRecord{}); err != nil {
 		return nil, fmt.Errorf("sqlite agent repo: migrate: %w", err)
 	}
+	telemetry.Logger().Info("sqlite_agent_repo_ready", "db_path", dbPath)
 
 	return &AgentRepository{db: db}, nil
 }
@@ -72,42 +74,53 @@ func (r *AgentRepository) Close() error {
 // Seed inserts or updates the provided agents by ID.
 // Useful for bootstrapping defaults in tests or startup flows.
 func (r *AgentRepository) Seed(ctx context.Context, agents []*domain.Agent) error {
+	traceID := telemetry.TraceID(ctx)
 	for _, a := range agents {
 		rec, err := toAgentRecord(a)
 		if err != nil {
+			telemetry.Logger().Error("sqlite_agent_seed_encode_failed", "trace_id", traceID, "agent_id", a.ID, "error", err.Error())
 			return err
 		}
 		if err := r.db.WithContext(ctx).Save(&rec).Error; err != nil {
+			telemetry.Logger().Error("sqlite_agent_seed_failed", "trace_id", traceID, "agent_id", a.ID, "error", err.Error())
 			return fmt.Errorf("sqlite agent repo: seed %q: %w", a.ID, err)
 		}
 	}
+	telemetry.Logger().Info("sqlite_agent_seed_done", "trace_id", traceID, "count", len(agents))
 	return nil
 }
 
 // FindByID returns an agent by ID or domain.ErrNotFound.
 func (r *AgentRepository) FindByID(ctx context.Context, id string) (*domain.Agent, error) {
+	traceID := telemetry.TraceID(ctx)
 	var rec agentRecord
 	err := r.db.WithContext(ctx).First(&rec, "id = ?", id).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
+		telemetry.Logger().Info("sqlite_agent_not_found", "trace_id", traceID, "agent_id", id)
 		return nil, fmt.Errorf("%w: agent %q", domain.ErrNotFound, id)
 	}
 	if err != nil {
+		telemetry.Logger().Error("sqlite_agent_find_failed", "trace_id", traceID, "agent_id", id, "error", err.Error())
 		return nil, fmt.Errorf("sqlite agent repo: find by id %q: %w", id, err)
 	}
 
 	a, err := toAgentDomain(rec)
 	if err != nil {
+		telemetry.Logger().Error("sqlite_agent_decode_failed", "trace_id", traceID, "agent_id", id, "error", err.Error())
 		return nil, err
 	}
+	telemetry.Logger().Info("sqlite_agent_found", "trace_id", traceID, "agent_id", id)
 	return &a, nil
 }
 
 // FindAll returns all agents ordered by ID ascending.
 func (r *AgentRepository) FindAll(ctx context.Context) ([]*domain.Agent, error) {
+	traceID := telemetry.TraceID(ctx)
 	var rows []agentRecord
 	if err := r.db.WithContext(ctx).
 		Order("id asc").
 		Find(&rows).Error; err != nil {
+		telemetry.Logger().Error("sqlite_agent_find_all_failed", "trace_id", traceID, "error", err.Error())
 		return nil, fmt.Errorf("sqlite agent repo: find all: %w", err)
 	}
 
@@ -115,10 +128,12 @@ func (r *AgentRepository) FindAll(ctx context.Context) ([]*domain.Agent, error) 
 	for _, row := range rows {
 		a, err := toAgentDomain(row)
 		if err != nil {
+			telemetry.Logger().Error("sqlite_agent_decode_failed", "trace_id", traceID, "agent_id", row.ID, "error", err.Error())
 			return nil, err
 		}
 		out = append(out, &a)
 	}
+	telemetry.Logger().Info("sqlite_agent_find_all_done", "trace_id", traceID, "count", len(out))
 	return out, nil
 }
 

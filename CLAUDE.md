@@ -6,12 +6,24 @@ This file provides project context for AI assistants.
 
 Navi is a secure AI orchestrator built with hexagonal architecture. Agents are defined by config files (`config.toml` + `AGENT.md`), not hardcoded.
 
+Current focus is **Sprint 1 runtime stability** (REPL/TUI loop, orchestrator tool-calling, MCP path, and local-dev ergonomics).
+
 ## Architecture
 
 - **Hexagonal Architecture** with ports & adapters
 - **Orchestrator**: Manages agent lifecycle and task routing
 - **Agents**: Execute tasks based on capabilities
 - **Isolation**: Sandboxed execution (native, docker, bubblewrap)
+
+### Important Current Runtime Note
+
+The current orchestrator implementation is intentionally minimal:
+- model-driven tool loop (`TOOL_CALL` protocol)
+- native tool registry
+- basic in-process MCP integration
+- clear REPL trace output sections (user/thinking/tool/orchestrator)
+
+This is a foundation, not full multi-agent agency yet.
 
 ## Key Components
 
@@ -21,13 +33,16 @@ Navi is a secure AI orchestrator built with hexagonal architecture. Agents are d
 | Orchestrator | `internal/core/services/orchestrator/` |
 | Domain | `internal/core/domain/` |
 | Adapters | `internal/adapters/` |
-| UI (REPL, API) | `internal/ui/` |
+| CLI Commands (repl/chat/serve) | `cmd/navi/cmd/` |
+| HTTP Adapter | `internal/adapters/http/` |
+| Local Agent Registry Loader | `internal/adapters/registry/localfs/` |
+| SQLite Repositories | `internal/adapters/storage/sqlite/` |
 
 ## Entry Points
 
 | Command | Description | Protocol |
 |---------|-------------|----------|
-| `navi` | REST API server (default) | HTTP |
+| `navi` | CLI root command (subcommands) | Direct |
 | `navi serve` | REST API server | HTTP |
 | `navi repl` | Terminal REPL | Direct |
 | `navi chat <msg>` | Single chat message | Direct |
@@ -82,7 +97,7 @@ The server also starts by default when running `navi` without arguments.
 | POST | `/tasks` | Create a new task |
 | GET | `/tasks` | List all tasks |
 | GET | `/tasks/:id` | Get task status |
-| POST | `/agents/sync` | Sync agents from GitHub |
+| POST | `/agents/sync` | Sync agents from local agent roots into SQLite |
 
 ### API Examples
 
@@ -108,9 +123,7 @@ curl http://localhost:8080/tasks/20260228123456-abc12345
 {
   "id": "optional-task-id",
   "agent_id": "optional-specific-agent",
-  "prompt": "Task description",
-  "requirements": ["filesystem:workspace:rw"],
-  "priority": 0
+  "prompt": "Task description"
 }
 ```
 
@@ -138,16 +151,37 @@ All user configurations are stored in `~/.config/navi/` for full transparency an
 | `~/.config/navi/agents/<id>/` | Agent configurations |
 | `~/.config/navi/workspace/<id>/` | Agent working directories |
 
+### First Launch Behavior
+
+On startup, Navi ensures the user config directory exists (`os.UserConfigDir()/navi`) before command execution.
+
+### `.env` Support (Development)
+
+Navi supports local `.env` loading for development:
+- `.env`
+- `.env.local`
+- `.env.<NAVI_ENV>`
+- `.env.<NAVI_ENV>.local`
+
+If `NAVI_ENV` is empty, it defaults to `development`.
+
+Useful vars:
+- `NAVI_ENV`
+- `NAVI_DEFAULT_PROVIDER`
+- `NAVI_DEFAULT_MODEL`
+- `NAVI_DEFAULT_API_KEY_ENV`
+- `NAVI_API_KEY`
+- `NAVI_LLM_BASE_URL`
+
+In development mode, startup prints which env files were loaded.
+
 ### Example config.toml
 
 ```toml
 [default_llm]
 provider = "openai"
 model = "gpt-4o-mini"
-temperature = 0.7
-
-[repl]
-system_prompt = "You are a helpful CLI assistant..."
+api_key_env = "OPENAI_API_KEY"
 ```
 
 See `configs/config.example.toml` for more examples.
@@ -182,12 +216,38 @@ Navi uses **filesystem as interface** and **SQLite as validator** (Checksum Stor
 - On boot: validates all agent hashes
 - Manual edit detected → prompt: *"Agent X was modified. Authorize?"*
 
+> Note: Validation/watch flow is architecture direction; parts are still being implemented incrementally.
+
+## Sprint Status (Current)
+
+### Sprint 1 (now)
+- Simple Navi TUI / REPL ✅
+- Basic main orchestrator agent ✅
+- Basic tool calling for orchestrator ✅
+- Basic MCP integration ✅
+- `.env` local development support ✅
+- Agent configuration folder requirements revision/re-think ✅
+- Logging system foundation (`slog` + JSONL) ✅
+
+**Sprint 1 goal:** Run TUI, ask model to use tools, and verify tools execute correctly.
+
+### Sprint 2 (planned)
+- Basic specialist agents (planner, researcher, coder, tester), one active at a time
+- Basic native MCP tools expansion
+- More CLI commands
+- TUI UX improvements
+
+**Sprint 2 goal:** In TUI chat, model can call MCP tools and delegate to specialist agents (without full agency yet).
+
+### Sprint 3 (planned)
+- Agency behavior and multi-agent coordination
+
 ## Dependencies
 
 - `github.com/go-chi/chi/v5` - HTTP router
 - `github.com/BurntSushi/toml` - Config parsing
 - `github.com/glebarez/sqlite` - Database
-- `charmbracelet/bubbletea` - TUI (for future use)
+- `github.com/joho/godotenv` - `.env` support for development
 - `google.golang.org/grpc` - gRPC (planned)
 
 ## Common Commands
@@ -195,9 +255,7 @@ Navi uses **filesystem as interface** and **SQLite as validator** (Checksum Stor
 ```bash
 go build ./...          # Build
 go test ./...           # Run tests
-go run cmd/navi/main.go serve  # Run API server
-navi repl               # Run REPL
-navi chat <message>    # Single chat message
-navi agent list         # List agents
-navi agent create       # Create new agent
+go run ./cmd/navi/main.go serve  # Run API server
+go run ./cmd/navi/main.go repl   # Run REPL
+go run ./cmd/navi/main.go chat "hello"  # Single chat message
 ```

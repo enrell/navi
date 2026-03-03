@@ -282,8 +282,8 @@ func TestProviderPreset_AllProviders(t *testing.T) {
 func TestProviderPreset_OllamaDefaultModel(t *testing.T) {
 	cfg := config.Config{DefaultLLM: config.LLMConfig{Provider: config.ProviderOllama}}
 	got := providerPreset(cfg, "")
-	if got.Model == "" {
-		t.Error("Ollama model should not be empty when not specified")
+	if got.Model != "" {
+		t.Errorf("Model = %q, want empty when not specified", got.Model)
 	}
 }
 
@@ -299,6 +299,7 @@ func TestProviderPreset_OllamaCustomModel(t *testing.T) {
 }
 
 func TestProviderPreset_UppercaseProvider_NormalisedByValidate(t *testing.T) {
+	clearNaviEnvOverrides(t)
 	// validate() normalises to lowercase before providerPreset is called;
 	// verify that loading a config with uppercase provider works end-to-end.
 	t.Setenv("NVIDIA_API_KEY", "k")
