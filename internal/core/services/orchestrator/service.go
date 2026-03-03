@@ -19,6 +19,11 @@ type toolCall struct {
 	Input string `json:"input"`
 }
 
+type toolCallRaw struct {
+	Name  string          `json:"name"`
+	Input json.RawMessage `json:"input"`
+}
+
 type TraceEventType string
 
 const (
@@ -81,6 +86,33 @@ func (s *Service) AskWithTrace(ctx context.Context, userMessage string) (string,
 	if strings.TrimSpace(userMessage) == "" {
 		logger.Error("ask_invalid_input")
 		return "", nil, fmt.Errorf("orchestrator: message cannot be empty")
+	}
+
+	if agentID, ok := detectExplicitDelegation(userMessage, s.agents); ok {
+		logger.Info("explicit_delegation_detected", "agent_id", agentID)
+		input, err := buildAgentCallInput(agentID, userMessage)
+		if err != nil {
+			logger.Error("explicit_delegation_input_failed", "agent_id", agentID, "error", err.Error())
+			return "", nil, fmt.Errorf("orchestrator: explicit delegation input: %w", err)
+		}
+
+		result, err := s.tools.ExecuteTool(ctx, "agent.call", input)
+		if err != nil {
+			logger.Error("explicit_delegation_failed", "agent_id", agentID, "error", err.Error())
+			return "", nil, fmt.Errorf("orchestrator: explicit delegation: %w", err)
+		}
+
+		finalReply := strings.TrimSpace(result)
+		if finalReply == "" {
+			finalReply = fmt.Sprintf("Delegation to %s completed.", agentID)
+		}
+		trace := []TraceEvent{
+			{Type: TraceThinking, Content: "User explicitly requested specialist delegation."},
+			{Type: TraceToolResponse, Tool: "agent.call", Content: result},
+			{Type: TraceOrchestrator, Content: finalReply},
+		}
+		logger.Info("ask_completed", "turn", 0, "tool_calls", 1, "reply_chars", len(finalReply))
+		return finalReply, trace, nil
 	}
 
 	systemPrompt, err := s.buildSystemPrompt(ctx)
@@ -157,6 +189,8 @@ func (s *Service) buildSystemPrompt(ctx context.Context) (string, error) {
 		"If a tool is needed, reply with exactly one line:",
 		"TOOL_CALL {\"name\":\"tool.name\",\"input\":\"text input\"}",
 		"If no tool is needed, answer normally.",
+		"IMPORTANT: If user explicitly requests a specific specialist (e.g. 'ask researcher to ...'), you MUST call agent.call for that specialist.",
+		"Read-only tools may be used directly when user does not explicitly require specialist delegation.",
 		"Available tools:",
 	}
 
@@ -182,8 +216,9 @@ func (s *Service) buildSystemPrompt(ctx context.Context) (string, error) {
 
 	if len(s.agents) > 0 {
 		lines = append(lines,
-			"Available specialist agents (loaded at startup):",
-			"Use tool agent.call to delegate work when specialization helps.",
+			"",
+			"Available specialist agents (use agent.call to delegate):",
+			"Explicit user instruction to use a specialist must be followed strictly.",
 		)
 		for _, id := range s.agents {
 			lines = append(lines, "- "+id)
@@ -205,15 +240,19 @@ func parseToolCalls(reply string) ([]toolCall, string, bool) {
 		return nil, thinking, false
 	}
 
-	var many []toolCall
+	var many []toolCallRaw
 	if err := json.Unmarshal([]byte(payload), &many); err == nil {
 		cleaned := make([]toolCall, 0, len(many))
 		for _, call := range many {
-			call.Name = strings.TrimSpace(call.Name)
-			if call.Name == "" {
+			name := strings.TrimSpace(call.Name)
+			if name == "" {
 				continue
 			}
-			cleaned = append(cleaned, call)
+			input, ok := normalizeToolInput(call.Input)
+			if !ok {
+				continue
+			}
+			cleaned = append(cleaned, toolCall{Name: name, Input: input})
 		}
 		if len(cleaned) == 0 {
 			return nil, thinking, false
@@ -221,7 +260,7 @@ func parseToolCalls(reply string) ([]toolCall, string, bool) {
 		return cleaned, thinking, true
 	}
 
-	var one toolCall
+	var one toolCallRaw
 	if err := json.Unmarshal([]byte(payload), &one); err != nil {
 		return nil, thinking, false
 	}
@@ -229,5 +268,74 @@ func parseToolCalls(reply string) ([]toolCall, string, bool) {
 	if one.Name == "" {
 		return nil, thinking, false
 	}
-	return []toolCall{one}, thinking, true
+	input, ok := normalizeToolInput(one.Input)
+	if !ok {
+		return nil, thinking, false
+	}
+	return []toolCall{{Name: one.Name, Input: input}}, thinking, true
+}
+
+func normalizeToolInput(raw json.RawMessage) (string, bool) {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "null" {
+		return "", true
+	}
+
+	var asString string
+	if err := json.Unmarshal(raw, &asString); err == nil {
+		return asString, true
+	}
+
+	var asAny any
+	if err := json.Unmarshal(raw, &asAny); err != nil {
+		return "", false
+	}
+
+	b, err := json.Marshal(asAny)
+	if err != nil {
+		return "", false
+	}
+	return string(b), true
+}
+
+func detectExplicitDelegation(userMessage string, agents []string) (string, bool) {
+	msg := strings.ToLower(strings.TrimSpace(userMessage))
+	if msg == "" || len(agents) == 0 {
+		return "", false
+	}
+
+	markers := []string{"tell", "ask", "delegate", "use", "call"}
+	hasMarker := false
+	for _, marker := range markers {
+		if strings.Contains(msg, marker) {
+			hasMarker = true
+			break
+		}
+	}
+	if !hasMarker {
+		return "", false
+	}
+
+	for _, id := range agents {
+		lowerID := strings.ToLower(strings.TrimSpace(id))
+		if lowerID == "" {
+			continue
+		}
+		if strings.Contains(msg, lowerID) {
+			return lowerID, true
+		}
+	}
+	return "", false
+}
+
+func buildAgentCallInput(agentID, prompt string) (string, error) {
+	payload := map[string]string{
+		"agent_id": strings.TrimSpace(agentID),
+		"prompt":   strings.TrimSpace(prompt),
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
 }

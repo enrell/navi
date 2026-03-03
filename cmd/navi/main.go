@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -79,21 +80,100 @@ func run(args []string, out io.Writer) error {
 	adapter := llmadapter.New(llmCfg)
 	chatService := chat.New(adapter)
 
-	toolRegistry := tools.NewRegistry()
-	_ = toolRegistry.Register("native.now", "Current UTC time in RFC3339", func(_ context.Context, _ string) (string, error) {
+	// Two registries: orchestrator tools (visible to orchestrator prompt) and
+	// specialist tools (visible to delegated agents). Read-only tools are
+	// intentionally available to both to avoid unnecessary delegation overhead.
+	orchestratorTools := tools.NewRegistry()
+	specialistTools := tools.NewRegistry()
+
+	_ = orchestratorTools.Register("native.now", "Current UTC time in RFC3339", func(_ context.Context, _ string) (string, error) {
 		return time.Now().UTC().Format(time.RFC3339), nil
 	})
-	_ = toolRegistry.Register("native.echo", "Echo input text", func(_ context.Context, input string) (string, error) {
+	_ = orchestratorTools.Register("native.echo", "Echo input text", func(_ context.Context, input string) (string, error) {
 		return strings.TrimSpace(input), nil
+	})
+
+	// Read-only tools for specialists.
+	_ = specialistTools.Register("native.now", "Current UTC time in RFC3339", func(_ context.Context, _ string) (string, error) {
+		return time.Now().UTC().Format(time.RFC3339), nil
+	})
+	_ = specialistTools.Register("native.echo", "Echo input text", func(_ context.Context, input string) (string, error) {
+		return strings.TrimSpace(input), nil
+	})
+	_ = orchestratorTools.Register("native.list_dirs", "List directories in current folder or input path. Input: path string or JSON {\"path\":\".\",\"limit\":10}", func(_ context.Context, input string) (string, error) {
+		target, limit, err := parseListDirsInput(input)
+		if err != nil {
+			return "", fmt.Errorf("native.list_dirs: %w", err)
+		}
+		entries, err := os.ReadDir(target)
+		if err != nil {
+			return "", fmt.Errorf("native.list_dirs: %w", err)
+		}
+		dirs := make([]string, 0, len(entries))
+		for _, entry := range entries {
+			if entry.IsDir() {
+				dirs = append(dirs, entry.Name())
+			}
+		}
+		sort.Strings(dirs)
+		if limit > 0 && limit < len(dirs) {
+			dirs = dirs[:limit]
+		}
+		payload := map[string]any{"path": target, "count": len(dirs), "directories": dirs}
+		b, err := json.Marshal(payload)
+		if err != nil {
+			return "", fmt.Errorf("native.list_dirs: marshal: %w", err)
+		}
+		return string(b), nil
+	})
+	_ = specialistTools.Register("native.list_dirs", "List directories in current folder or input path. Input: path string or JSON {\"path\":\".\",\"limit\":10}", func(_ context.Context, input string) (string, error) {
+		target, limit, err := parseListDirsInput(input)
+		if err != nil {
+			return "", fmt.Errorf("native.list_dirs: %w", err)
+		}
+		entries, err := os.ReadDir(target)
+		if err != nil {
+			return "", fmt.Errorf("native.list_dirs: %w", err)
+		}
+		dirs := make([]string, 0, len(entries))
+		for _, entry := range entries {
+			if entry.IsDir() {
+				dirs = append(dirs, entry.Name())
+			}
+		}
+		sort.Strings(dirs)
+		if limit > 0 && limit < len(dirs) {
+			dirs = dirs[:limit]
+		}
+		payload := map[string]any{"path": target, "count": len(dirs), "directories": dirs}
+		b, err := json.Marshal(payload)
+		if err != nil {
+			return "", fmt.Errorf("native.list_dirs: marshal: %w", err)
+		}
+		return string(b), nil
 	})
 
 	mcpClient := inprocess.New()
 	_ = mcpClient.Register("echo", func(_ context.Context, input string) (string, error) {
 		return "mcp echo: " + strings.TrimSpace(input), nil
 	})
-	_ = toolRegistry.Register("mcp.echo", "Call MCP echo tool", func(ctx context.Context, input string) (string, error) {
+	if logPath, err := telemetry.LogPath(); err != nil {
+		telemetry.Logger().Error("mcp_logs_register_failed", "error", err.Error())
+	} else {
+		_ = mcpClient.Register("logs", inprocess.NewLogsHandler(logPath))
+	}
+
+	mcpEchoHandler := func(ctx context.Context, input string) (string, error) {
 		return mcpClient.CallTool(ctx, "echo", input)
-	})
+	}
+	mcpLogsHandler := func(ctx context.Context, input string) (string, error) {
+		return mcpClient.CallTool(ctx, "logs", input)
+	}
+
+	_ = orchestratorTools.Register("mcp.echo", "Call MCP echo tool", mcpEchoHandler)
+	_ = orchestratorTools.Register("mcp.logs", "Query telemetry logs. Input can be JSON {\"limit\":20,\"trace_id\":\"...\",\"level\":\"error\",\"component\":\"orchestrator\",\"contains\":\"text\"}", mcpLogsHandler)
+	_ = specialistTools.Register("mcp.echo", "Call MCP echo tool", mcpEchoHandler)
+	_ = specialistTools.Register("mcp.logs", "Query telemetry logs. Input can be JSON {\"limit\":20,\"trace_id\":\"...\",\"level\":\"error\",\"component\":\"orchestrator\",\"contains\":\"text\"}", mcpLogsHandler)
 
 	defaultAgents, agentIDs, err := loadDefaultSpecialistAgents()
 	if err != nil {
@@ -102,13 +182,13 @@ func run(args []string, out io.Writer) error {
 		telemetry.Logger().Info("load_default_agents_done", "count", len(defaultAgents), "agents", strings.Join(agentIDs, ","))
 	}
 	if len(defaultAgents) > 0 {
-		err := toolRegistry.Register("agent.call", "Call a default specialist agent. Input JSON: {\"agent_id\":\"coder\",\"prompt\":\"...\"}", buildAgentDelegationTool(adapter, defaultAgents))
+		err := orchestratorTools.Register("agent.call", "Delegate task to a specialist agent. Input JSON: {\"agent_id\":\"coder\",\"prompt\":\"...\"}. Required when user explicitly requests a specific specialist.", buildAgentDelegationTool(adapter, specialistTools, defaultAgents))
 		if err != nil {
 			telemetry.Logger().Error("register_agent_call_tool_failed", "error", err.Error())
 		}
 	}
 
-	orchestratorService := orchestratorsvc.New(adapter, toolRegistry)
+	orchestratorService := orchestratorsvc.New(adapter, orchestratorTools)
 	orchestratorService.SetAvailableAgents(agentIDs)
 
 	deps := navcmd.Dependencies{
@@ -329,7 +409,9 @@ type agentToolInput struct {
 	Message string `json:"message"`
 }
 
-func buildAgentDelegationTool(llm ports.LLMPort, agents map[string]*domain.GenericAgent) tools.Handler {
+const delegatedAgentMaxTurns = 4
+
+func buildAgentDelegationTool(llm ports.LLMPort, toolExec ports.ToolExecutor, agents map[string]*domain.GenericAgent) tools.Handler {
 	return func(ctx context.Context, input string) (string, error) {
 		traceID := telemetry.TraceID(ctx)
 		agentID, prompt, err := parseAgentCallInput(input)
@@ -344,16 +426,326 @@ func buildAgentDelegationTool(llm ports.LLMPort, agents map[string]*domain.Gener
 			return "", fmt.Errorf("agent.call: unknown agent %q", agentID)
 		}
 
-		messages := agent.BuildMessages(prompt)
-		telemetry.Logger().Info("agent_call_start", "trace_id", traceID, "agent_id", agentID, "prompt_chars", len(prompt))
-		reply, err := llm.Chat(ctx, messages)
+		messages, err := buildDelegatedAgentMessages(ctx, agent, prompt, toolExec)
 		if err != nil {
-			telemetry.Logger().Error("agent_call_failed", "trace_id", traceID, "agent_id", agentID, "error", err.Error())
+			telemetry.Logger().Error("agent_call_build_messages_failed", "trace_id", traceID, "agent_id", agentID, "error", err.Error())
 			return "", fmt.Errorf("agent.call: %w", err)
 		}
-		telemetry.Logger().Info("agent_call_done", "trace_id", traceID, "agent_id", agentID, "reply_chars", len(reply))
-		return strings.TrimSpace(reply), nil
+		telemetry.Logger().Info("agent_call_start", "trace_id", traceID, "agent_id", agentID, "prompt_chars", len(prompt))
+
+		for turn := 0; turn < delegatedAgentMaxTurns; turn++ {
+			reply, err := llm.Chat(ctx, messages)
+			if err != nil {
+				telemetry.Logger().Error("agent_call_failed", "trace_id", traceID, "agent_id", agentID, "turn", turn+1, "error", err.Error())
+				return "", fmt.Errorf("agent.call: %w", err)
+			}
+
+			calls, thinking, hasCalls := parseAgentToolCalls(reply)
+			if !hasCalls {
+				final := strings.TrimSpace(reply)
+				telemetry.Logger().Info("agent_call_done", "trace_id", traceID, "agent_id", agentID, "reply_chars", len(final), "turn", turn+1)
+				return final, nil
+			}
+
+			toolResults := make([]string, 0, len(calls))
+			for _, call := range calls {
+				if strings.EqualFold(strings.TrimSpace(call.Name), "agent.call") {
+					toolResults = append(toolResults, "TOOL_RESULT name=agent.call\ntool execution error: recursive delegation is not allowed")
+					continue
+				}
+
+				telemetry.Logger().Info("agent_tool_call_requested", "trace_id", traceID, "agent_id", agentID, "tool", call.Name, "input_chars", len(call.Input), "turn", turn+1)
+				result, err := toolExec.ExecuteTool(ctx, call.Name, call.Input)
+				if err != nil {
+					telemetry.Logger().Error("agent_tool_call_failed", "trace_id", traceID, "agent_id", agentID, "tool", call.Name, "turn", turn+1, "error", err.Error())
+					result = "tool execution error: " + err.Error()
+				}
+				telemetry.Logger().Info("agent_tool_call_done", "trace_id", traceID, "agent_id", agentID, "tool", call.Name, "turn", turn+1, "result_chars", len(result))
+				toolResults = append(toolResults, fmt.Sprintf("TOOL_RESULT name=%s\n%s", call.Name, result))
+			}
+
+			toolResultBlock := strings.Join(toolResults, "\n\n")
+			if strings.TrimSpace(thinking) == "" {
+				thinking = "Using tool results to continue."
+			}
+			messages = append(messages,
+				domain.Message{Role: domain.RoleAssistant, Content: strings.TrimSpace(reply)},
+				domain.Message{Role: domain.RoleUser, Content: strings.TrimSpace(thinking) + "\n\n" + toolResultBlock},
+			)
+		}
+
+		telemetry.Logger().Error("agent_call_max_turns_reached", "trace_id", traceID, "agent_id", agentID, "max_turns", delegatedAgentMaxTurns)
+		return "", fmt.Errorf("agent.call: max tool iterations reached")
 	}
+}
+
+func buildDelegatedAgentMessages(ctx context.Context, agent *domain.GenericAgent, prompt string, toolExec ports.ToolExecutor) ([]domain.Message, error) {
+	messages := agent.BuildMessages(prompt)
+	toolsList, err := toolExec.ListTools(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list tools: %w", err)
+	}
+
+	lines := []string{
+		"CRITICAL: When a tool is needed, you MUST reply with EXACTLY this format on its own line:",
+		"TOOL_CALL {\"name\":\"tool.name\",\"input\":\"text input\"}",
+		"Do NOT use any other format like <tool_call>, <function=...>, or markdown code blocks.",
+		"Do NOT use agent.call — it does not exist for you.",
+		"If no tool is needed, answer normally without TOOL_CALL.",
+		"Available tools:",
+	}
+	for _, tool := range toolsList {
+		name := strings.TrimSpace(tool.Name)
+		if name == "" || strings.EqualFold(name, "agent.call") {
+			continue
+		}
+		desc := strings.TrimSpace(tool.Description)
+		if desc == "" {
+			desc = "no description"
+		}
+		lines = append(lines, "- "+name+": "+desc)
+	}
+
+	instruction := strings.Join(lines, "\n")
+	if len(messages) > 0 && messages[0].Role == domain.RoleSystem {
+		messages[0].Content = strings.TrimSpace(messages[0].Content + "\n\n" + instruction)
+		return messages, nil
+	}
+
+	withSystem := make([]domain.Message, 0, len(messages)+1)
+	withSystem = append(withSystem, domain.Message{Role: domain.RoleSystem, Content: instruction})
+	withSystem = append(withSystem, messages...)
+	return withSystem, nil
+}
+
+type toolCall struct {
+	Name  string
+	Input string
+}
+
+type toolCallRaw struct {
+	Name  string          `json:"name"`
+	Input json.RawMessage `json:"input"`
+}
+
+func parseAgentToolCalls(reply string) ([]toolCall, string, bool) {
+	// Try standard TOOL_CALL format first.
+	if idx := strings.Index(reply, "TOOL_CALL"); idx >= 0 {
+		thinking := strings.TrimSpace(reply[:idx])
+		payload := strings.TrimSpace(reply[idx+len("TOOL_CALL"):])
+		if payload != "" {
+			if calls, ok := parseJSONToolCalls(payload); ok {
+				return calls, thinking, true
+			}
+		}
+	}
+
+	// Try XML <tool_call> format that some models emit.
+	if calls, thinking, ok := parseXMLToolCalls(reply); ok {
+		return calls, thinking, true
+	}
+
+	return nil, "", false
+}
+
+func parseJSONToolCalls(payload string) ([]toolCall, bool) {
+	var many []toolCallRaw
+	if err := json.Unmarshal([]byte(payload), &many); err == nil {
+		calls := make([]toolCall, 0, len(many))
+		for _, call := range many {
+			name := strings.TrimSpace(call.Name)
+			if name == "" {
+				continue
+			}
+			input, ok := normalizeToolInput(call.Input)
+			if !ok {
+				continue
+			}
+			calls = append(calls, toolCall{Name: name, Input: input})
+		}
+		if len(calls) == 0 {
+			return nil, false
+		}
+		return calls, true
+	}
+
+	var one toolCallRaw
+	if err := json.Unmarshal([]byte(payload), &one); err != nil {
+		return nil, false
+	}
+	name := strings.TrimSpace(one.Name)
+	if name == "" {
+		return nil, false
+	}
+	input, ok := normalizeToolInput(one.Input)
+	if !ok {
+		return nil, false
+	}
+	return []toolCall{{Name: name, Input: input}}, true
+}
+
+// parseXMLToolCalls handles models that emit:
+// <tool_call>
+// <function=native.list_dirs>
+// <parameter=path>docs</parameter>
+// </function>
+// </tool_call>
+func parseXMLToolCalls(reply string) ([]toolCall, string, bool) {
+	const openTag = "<tool_call>"
+	const closeTag = "</tool_call>"
+
+	idx := strings.Index(reply, openTag)
+	if idx < 0 {
+		return nil, "", false
+	}
+
+	thinking := strings.TrimSpace(reply[:idx])
+	calls := make([]toolCall, 0, 2)
+
+	remaining := reply[idx:]
+	for {
+		start := strings.Index(remaining, openTag)
+		if start < 0 {
+			break
+		}
+		end := strings.Index(remaining[start:], closeTag)
+		if end < 0 {
+			// Handle unclosed tag: take rest of string
+			end = len(remaining) - start
+		} else {
+			end += len(closeTag)
+		}
+		block := remaining[start : start+end]
+		remaining = remaining[start+end:]
+
+		name, input := parseXMLFunctionCall(block)
+		if name != "" {
+			calls = append(calls, toolCall{Name: name, Input: input})
+		}
+	}
+
+	if len(calls) == 0 {
+		return nil, thinking, false
+	}
+	return calls, thinking, true
+}
+
+func parseXMLFunctionCall(block string) (string, string) {
+	// Extract function name from <function=name>
+	const funcPrefix = "<function="
+	fStart := strings.Index(block, funcPrefix)
+	if fStart < 0 {
+		return "", ""
+	}
+	fStart += len(funcPrefix)
+	fEnd := strings.Index(block[fStart:], ">")
+	if fEnd < 0 {
+		return "", ""
+	}
+	name := strings.TrimSpace(block[fStart : fStart+fEnd])
+
+	// Extract parameter values (join all <parameter=key>value</parameter>)
+	params := make(map[string]string)
+	search := block[fStart+fEnd:]
+	for {
+		const paramPrefix = "<parameter="
+		pStart := strings.Index(search, paramPrefix)
+		if pStart < 0 {
+			break
+		}
+		pStart += len(paramPrefix)
+		keyEnd := strings.Index(search[pStart:], ">")
+		if keyEnd < 0 {
+			break
+		}
+		key := strings.TrimSpace(search[pStart : pStart+keyEnd])
+		valStart := pStart + keyEnd + 1
+		valEnd := strings.Index(search[valStart:], "</parameter>")
+		var val string
+		if valEnd < 0 {
+			val = strings.TrimSpace(search[valStart:])
+		} else {
+			val = strings.TrimSpace(search[valStart : valStart+valEnd])
+		}
+		params[key] = val
+		if valEnd < 0 {
+			break
+		}
+		search = search[valStart+valEnd+len("</parameter>"):]
+	}
+
+	// Build input: if single parameter, use value directly; if multiple, JSON-encode
+	var input string
+	switch len(params) {
+	case 0:
+		input = ""
+	case 1:
+		for _, v := range params {
+			input = v
+		}
+	default:
+		b, _ := json.Marshal(params)
+		input = string(b)
+	}
+
+	return name, input
+}
+
+func normalizeToolInput(raw json.RawMessage) (string, bool) {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "null" {
+		return "", true
+	}
+
+	var asString string
+	if err := json.Unmarshal(raw, &asString); err == nil {
+		return asString, true
+	}
+
+	var asAny any
+	if err := json.Unmarshal(raw, &asAny); err != nil {
+		return "", false
+	}
+
+	b, err := json.Marshal(asAny)
+	if err != nil {
+		return "", false
+	}
+	return string(b), true
+}
+
+func parseListDirsInput(input string) (string, int, error) {
+	trimmed := strings.TrimSpace(input)
+	if trimmed == "" {
+		return ".", 0, nil
+	}
+
+	if strings.HasPrefix(trimmed, "{") {
+		var payload struct {
+			Path  string `json:"path"`
+			Limit int    `json:"limit"`
+		}
+		if err := json.Unmarshal([]byte(trimmed), &payload); err != nil {
+			return "", 0, fmt.Errorf("invalid JSON input: %w", err)
+		}
+		path := strings.TrimSpace(payload.Path)
+		if path == "" {
+			path = "."
+		}
+		if payload.Limit < 0 {
+			payload.Limit = 0
+		}
+		return path, payload.Limit, nil
+	}
+
+	if n, err := strconv.Atoi(trimmed); err == nil {
+		if n < 0 {
+			n = 0
+		}
+		return ".", n, nil
+	}
+
+	return trimmed, 0, nil
 }
 
 func parseAgentCallInput(raw string) (string, string, error) {

@@ -49,7 +49,7 @@ func TestBuildSystemPrompt_IncludesAvailableAgents(t *testing.T) {
 		t.Fatalf("first message role = %q, want system", llm.seen[0].Role)
 	}
 	content := llm.seen[0].Content
-	if !(strings.Contains(content, "Available specialist agents") && strings.Contains(content, "- coder") && strings.Contains(content, "- tester")) {
+	if !(strings.Contains(content, "Available specialist agents") && strings.Contains(content, "- coder") && strings.Contains(content, "- tester") && strings.Contains(content, "must be followed strictly")) {
 		t.Fatalf("system prompt missing agent list: %q", content)
 	}
 }
@@ -159,5 +159,99 @@ func TestAskWithTrace_MultiToolArray(t *testing.T) {
 	}
 	if trace[len(trace)-1].Type != orchestrator.TraceOrchestrator {
 		t.Fatalf("last trace type = %q, want orchestrator", trace[len(trace)-1].Type)
+	}
+}
+
+func TestAsk_ToolCallWithObjectInput_DelegationStyle(t *testing.T) {
+	llm := &llmStub{replies: []string{
+		"TOOL_CALL {\"name\":\"agent.call\",\"input\":{\"agent_id\":\"researcher\",\"prompt\":\"List the directories.\"}}",
+		"Delegated successfully",
+	}}
+	tools := &toolExecStub{tools: []ports.Tool{{Name: "agent.call"}}, result: "ok"}
+	svc := orchestrator.New(llm, tools)
+
+	got, err := svc.Ask(context.Background(), "delegate")
+	if err != nil {
+		t.Fatalf("Ask error: %v", err)
+	}
+	if got != "Delegated successfully" {
+		t.Errorf("got %q, want %q", got, "Delegated successfully")
+	}
+	if tools.lastName != "agent.call" {
+		t.Fatalf("tool name = %q, want agent.call", tools.lastName)
+	}
+	if !strings.Contains(tools.lastIn, `"agent_id":"researcher"`) || !strings.Contains(tools.lastIn, `"prompt":"List the directories."`) {
+		t.Fatalf("tool input = %q, want JSON object with agent_id and prompt", tools.lastIn)
+	}
+}
+
+func TestAskWithTrace_MultiToolArray_WithNonStringInput(t *testing.T) {
+	llm := &llmStub{replies: []string{
+		"TOOL_CALL [{\"name\":\"native.echo\",\"input\":123},{\"name\":\"agent.call\",\"input\":{\"agent_id\":\"tester\",\"prompt\":\"run tests\"}}]",
+		"done",
+	}}
+	tools := &toolExecStub{tools: []ports.Tool{{Name: "native.echo"}, {Name: "agent.call"}}, result: "ok"}
+	svc := orchestrator.New(llm, tools)
+
+	_, _, err := svc.AskWithTrace(context.Background(), "run")
+	if err != nil {
+		t.Fatalf("AskWithTrace error: %v", err)
+	}
+	if len(tools.calls) != 2 {
+		t.Fatalf("tool calls len = %d, want 2", len(tools.calls))
+	}
+	if tools.calls[0] != "native.echo=123" {
+		t.Fatalf("first tool call = %q, want native.echo=123", tools.calls[0])
+	}
+	if !strings.HasPrefix(tools.calls[1], "agent.call=") || !strings.Contains(tools.calls[1], `"agent_id":"tester"`) {
+		t.Fatalf("second tool call = %q, want agent.call JSON payload", tools.calls[1])
+	}
+}
+
+func TestAsk_ExplicitDelegationBypassesLLM(t *testing.T) {
+	llm := &llmStub{replies: []string{"should-not-be-used"}}
+	tools := &toolExecStub{
+		tools:  []ports.Tool{{Name: "native.list_dirs"}, {Name: "agent.call"}},
+		result: "delegated result",
+	}
+	svc := orchestrator.New(llm, tools)
+	svc.SetAvailableAgents([]string{"researcher"})
+
+	got, err := svc.Ask(context.Background(), "tell researcher to list directories and send me the result")
+	if err != nil {
+		t.Fatalf("Ask error: %v", err)
+	}
+	if got != "delegated result" {
+		t.Fatalf("got %q, want delegated result", got)
+	}
+	if tools.lastName != "agent.call" {
+		t.Fatalf("tool name = %q, want agent.call", tools.lastName)
+	}
+	if !strings.Contains(tools.lastIn, `"agent_id":"researcher"`) {
+		t.Fatalf("tool input = %q, want researcher delegation", tools.lastIn)
+	}
+	if len(llm.seen) != 0 {
+		t.Fatalf("llm should not have been called, seen=%d", len(llm.seen))
+	}
+}
+
+func TestAsk_WithoutExplicitDelegationCanUseDirectTools(t *testing.T) {
+	llm := &llmStub{replies: []string{
+		`TOOL_CALL {"name":"native.list_dirs","input":"."}`,
+		"done",
+	}}
+	tools := &toolExecStub{tools: []ports.Tool{{Name: "native.list_dirs"}}, result: `{"count":1}`}
+	svc := orchestrator.New(llm, tools)
+	svc.SetAvailableAgents([]string{"researcher"})
+
+	got, err := svc.Ask(context.Background(), "list the directories here")
+	if err != nil {
+		t.Fatalf("Ask error: %v", err)
+	}
+	if got != "done" {
+		t.Fatalf("got %q, want done", got)
+	}
+	if tools.lastName != "native.list_dirs" {
+		t.Fatalf("tool name = %q, want native.list_dirs", tools.lastName)
 	}
 }

@@ -6,7 +6,7 @@ This file provides project context for AI assistants.
 
 Navi is a secure AI orchestrator built with hexagonal architecture. Agents are defined by config files (`config.toml` + `AGENT.md`), not hardcoded.
 
-Current focus is **Sprint 1 runtime stability** (REPL/TUI loop, orchestrator tool-calling, MCP path, and local-dev ergonomics).
+Current focus is **Sprint 2 delegation/runtime behavior** (orchestrator delegation policy, specialist tool-loop behavior, MCP expansion, and REPL reliability).
 
 ## Architecture
 
@@ -17,10 +17,12 @@ Current focus is **Sprint 1 runtime stability** (REPL/TUI loop, orchestrator too
 
 ### Important Current Runtime Note
 
-The current orchestrator implementation is intentionally minimal:
+The current orchestrator implementation is intentionally minimal but now includes:
 - model-driven tool loop (`TOOL_CALL` protocol)
-- native tool registry
-- basic in-process MCP integration
+- deterministic explicit-delegation path (if user explicitly requests a specialist, orchestrator forces `agent.call`)
+- read-only direct tool access for orchestrator (to reduce unnecessary delegation/API usage)
+- delegated specialist tool loop via `agent.call` (specialists can call tools and return results)
+- basic in-process MCP integration (`mcp.echo`, `mcp.logs`)
 - clear REPL trace output sections (user/thinking/tool/orchestrator)
 
 This is a foundation, not full multi-agent agency yet.
@@ -193,6 +195,8 @@ Default agents are stored in `configs/agents/` in the repository:
 ```
 configs/agents/
 ├── orchestrator/
+├── planner/
+├── tester/
 ├── coder/
 └── researcher/
 ```
@@ -234,11 +238,13 @@ Navi uses **filesystem as interface** and **SQLite as validator** (Checksum Stor
 ### Sprint 2 (planned)
 - Basic specialist agents (planner, researcher, coder, tester), one active at a time ✅
 - Orchestrator delegation tool (`agent.call`) with startup-loaded agent list in system prompt ✅
-- Basic native MCP tools expansion ⏳
+- Delegated specialist tool loop (specialist can call tools via `TOOL_CALL`) ✅
+- Explicit specialist-instruction enforcement (direct user instruction to use specialist is followed deterministically) ✅
+- Basic native MCP tools expansion (`mcp.echo`, `mcp.logs`) ⏳
 - More CLI commands ⏳
 - TUI UX improvements ⏳
 
-**Sprint 2 goal:** In TUI chat, model can call MCP tools and delegate to specialist agents (without full agency yet).
+**Sprint 2 goal:** In TUI chat, model can call MCP tools directly when efficient, and delegate to specialist agents when explicitly requested or beneficial (without full agency yet).
 
 ### Sprint 3 (planned)
 - Agency behavior and multi-agent coordination

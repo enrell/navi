@@ -417,20 +417,49 @@ func clearNaviEnvOverrides(t *testing.T) {
 }
 
 type agentCallLLMStub struct {
-	reply    string
+	replies  []string
 	err      error
 	messages []domain.Message
+	idx      int
 }
 
 func (s *agentCallLLMStub) Chat(_ context.Context, messages []domain.Message) (string, error) {
-	s.messages = messages
+	s.messages = append([]domain.Message(nil), messages...)
 	if s.err != nil {
 		return "", s.err
 	}
-	return s.reply, nil
+	if s.idx >= len(s.replies) {
+		return "", nil
+	}
+	out := s.replies[s.idx]
+	s.idx++
+	return out, nil
 }
 
 var _ ports.LLMPort = (*agentCallLLMStub)(nil)
+
+type agentCallToolExecStub struct {
+	tools    []ports.Tool
+	result   string
+	err      error
+	lastName string
+	lastIn   string
+}
+
+func (s *agentCallToolExecStub) ListTools(context.Context) ([]ports.Tool, error) {
+	return s.tools, nil
+}
+
+func (s *agentCallToolExecStub) ExecuteTool(_ context.Context, name, input string) (string, error) {
+	s.lastName = name
+	s.lastIn = input
+	if s.err != nil {
+		return "", s.err
+	}
+	return s.result, nil
+}
+
+var _ ports.ToolExecutor = (*agentCallToolExecStub)(nil)
 
 func TestParseAgentCallInput_JSON(t *testing.T) {
 	agentID, prompt, err := parseAgentCallInput(`{"agent_id":"coder","prompt":"fix bug"}`)
@@ -453,12 +482,13 @@ func TestParseAgentCallInput_ColonFormat(t *testing.T) {
 }
 
 func TestBuildAgentDelegationTool_CallsSelectedAgent(t *testing.T) {
-	llm := &agentCallLLMStub{reply: "done"}
+	llm := &agentCallLLMStub{replies: []string{"done"}}
+	tools := &agentCallToolExecStub{tools: []ports.Tool{{Name: "native.echo", Description: "echo"}}}
 	coder, err := domain.NewGenericAgent(domain.AgentConfig{ID: "coder", Type: domain.AgentTypeGeneric, Name: "Coder"}, "You are coder")
 	if err != nil {
 		t.Fatalf("NewGenericAgent: %v", err)
 	}
-	tool := buildAgentDelegationTool(llm, map[string]*domain.GenericAgent{"coder": coder})
+	tool := buildAgentDelegationTool(llm, tools, map[string]*domain.GenericAgent{"coder": coder})
 
 	got, err := tool(context.Background(), `{"agent_id":"coder","prompt":"implement feature"}`)
 	if err != nil {
@@ -469,6 +499,123 @@ func TestBuildAgentDelegationTool_CallsSelectedAgent(t *testing.T) {
 	}
 	if len(llm.messages) == 0 || llm.messages[0].Role != domain.RoleSystem {
 		t.Fatalf("unexpected messages sent to llm: %+v", llm.messages)
+	}
+}
+
+func TestBuildAgentDelegationTool_SpecialistCanCallTool(t *testing.T) {
+	llm := &agentCallLLMStub{replies: []string{
+		`TOOL_CALL {"name":"native.echo","input":"hello from specialist"}`,
+		"specialist final answer",
+	}}
+	tools := &agentCallToolExecStub{
+		tools:  []ports.Tool{{Name: "native.echo", Description: "echo"}, {Name: "agent.call", Description: "delegate"}},
+		result: "echo-result",
+	}
+	researcher, err := domain.NewGenericAgent(domain.AgentConfig{ID: "researcher", Type: domain.AgentTypeGeneric, Name: "Researcher"}, "You are researcher")
+	if err != nil {
+		t.Fatalf("NewGenericAgent: %v", err)
+	}
+	tool := buildAgentDelegationTool(llm, tools, map[string]*domain.GenericAgent{"researcher": researcher})
+
+	got, err := tool(context.Background(), `{"agent_id":"researcher","prompt":"use tools"}`)
+	if err != nil {
+		t.Fatalf("tool error: %v", err)
+	}
+	if got != "specialist final answer" {
+		t.Fatalf("got %q, want specialist final answer", got)
+	}
+	if tools.lastName != "native.echo" || tools.lastIn != "hello from specialist" {
+		t.Fatalf("tool execute = (%q,%q), want (native.echo,hello from specialist)", tools.lastName, tools.lastIn)
+	}
+}
+
+func TestParseAgentToolCalls_ObjectInput(t *testing.T) {
+	calls, _, ok := parseAgentToolCalls(`TOOL_CALL {"name":"agent.call","input":{"agent_id":"researcher","prompt":"list dirs"}}`)
+	if !ok {
+		t.Fatal("expected tool call parse success")
+	}
+	if len(calls) != 1 {
+		t.Fatalf("calls len = %d, want 1", len(calls))
+	}
+	if !strings.Contains(calls[0].Input, `"agent_id":"researcher"`) {
+		t.Fatalf("input = %q, want JSON object encoded string", calls[0].Input)
+	}
+}
+
+func TestParseAgentToolCalls_XMLFormat(t *testing.T) {
+	reply := "I'll call the tool.\n<tool_call>\n<function=native.list_dirs>\n<parameter=path>docs</parameter>\n</function>\n</tool_call>"
+	calls, thinking, ok := parseAgentToolCalls(reply)
+	if !ok {
+		t.Fatal("expected XML tool call parse success")
+	}
+	if len(calls) != 1 {
+		t.Fatalf("calls len = %d, want 1", len(calls))
+	}
+	if calls[0].Name != "native.list_dirs" {
+		t.Fatalf("name = %q, want native.list_dirs", calls[0].Name)
+	}
+	if calls[0].Input != "docs" {
+		t.Fatalf("input = %q, want docs", calls[0].Input)
+	}
+	if thinking != "I'll call the tool." {
+		t.Fatalf("thinking = %q, want prefix text", thinking)
+	}
+}
+
+func TestParseAgentToolCalls_XMLMultipleParams(t *testing.T) {
+	reply := `<tool_call>
+<function=native.list_dirs>
+<parameter=path>src</parameter>
+<parameter=limit>5</parameter>
+</function>
+</tool_call>`
+	calls, _, ok := parseAgentToolCalls(reply)
+	if !ok {
+		t.Fatal("expected parse success")
+	}
+	if len(calls) != 1 {
+		t.Fatalf("calls len = %d, want 1", len(calls))
+	}
+	if calls[0].Name != "native.list_dirs" {
+		t.Fatalf("name = %q, want native.list_dirs", calls[0].Name)
+	}
+	// Multiple params → JSON encoded
+	if !strings.Contains(calls[0].Input, `"path":"src"`) || !strings.Contains(calls[0].Input, `"limit":"5"`) {
+		t.Fatalf("input = %q, want JSON with path and limit", calls[0].Input)
+	}
+}
+
+func TestParseXMLToolCalls_NoXML(t *testing.T) {
+	_, _, ok := parseXMLToolCalls("just a regular response")
+	if ok {
+		t.Fatal("expected no match for regular text")
+	}
+}
+
+func TestBuildAgentDelegationTool_XMLToolCallExecuted(t *testing.T) {
+	llm := &agentCallLLMStub{replies: []string{
+		"<tool_call>\n<function=native.list_dirs>\n<parameter=path>.</parameter>\n</function>\n</tool_call>",
+		"found 2 directories",
+	}}
+	tools := &agentCallToolExecStub{
+		tools:  []ports.Tool{{Name: "native.list_dirs", Description: "list dirs"}},
+		result: `{"path":".","count":2,"directories":["cmd","internal"]}`,
+	}
+	researcher, err := domain.NewGenericAgent(domain.AgentConfig{ID: "researcher", Type: domain.AgentTypeGeneric, Name: "Researcher"}, "You are researcher")
+	if err != nil {
+		t.Fatalf("NewGenericAgent: %v", err)
+	}
+	tool := buildAgentDelegationTool(llm, tools, map[string]*domain.GenericAgent{"researcher": researcher})
+
+	got, err := tool(context.Background(), `{"agent_id":"researcher","prompt":"list dirs"}`)
+	if err != nil {
+		t.Fatalf("tool error: %v", err)
+	}
+	if got != "found 2 directories" {
+		t.Fatalf("got %q, want found 2 directories", got)
+	}
+	if tools.lastName != "native.list_dirs" {
+		t.Fatalf("tool name = %q, want native.list_dirs", tools.lastName)
 	}
 }
 
