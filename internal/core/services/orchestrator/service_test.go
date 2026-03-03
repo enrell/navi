@@ -3,6 +3,7 @@ package orchestrator_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"navi/internal/core/domain"
@@ -14,9 +15,11 @@ type llmStub struct {
 	replies []string
 	err     error
 	idx     int
+	seen    []domain.Message
 }
 
-func (s *llmStub) Chat(_ context.Context, _ []domain.Message) (string, error) {
+func (s *llmStub) Chat(_ context.Context, messages []domain.Message) (string, error) {
+	s.seen = append(s.seen, messages...)
 	if s.err != nil {
 		return "", s.err
 	}
@@ -26,6 +29,29 @@ func (s *llmStub) Chat(_ context.Context, _ []domain.Message) (string, error) {
 	r := s.replies[s.idx]
 	s.idx++
 	return r, nil
+}
+
+func TestBuildSystemPrompt_IncludesAvailableAgents(t *testing.T) {
+	llm := &llmStub{replies: []string{"final"}}
+	tools := &toolExecStub{tools: []ports.Tool{{Name: "agent.call", Description: "delegate"}}}
+	svc := orchestrator.New(llm, tools)
+	svc.SetAvailableAgents([]string{"coder", "tester", "coder"})
+
+	_, err := svc.Ask(context.Background(), "hello")
+	if err != nil {
+		t.Fatalf("Ask error: %v", err)
+	}
+
+	if len(llm.seen) == 0 {
+		t.Fatal("expected llm messages to be captured")
+	}
+	if llm.seen[0].Role != domain.RoleSystem {
+		t.Fatalf("first message role = %q, want system", llm.seen[0].Role)
+	}
+	content := llm.seen[0].Content
+	if !(strings.Contains(content, "Available specialist agents") && strings.Contains(content, "- coder") && strings.Contains(content, "- tester")) {
+		t.Fatalf("system prompt missing agent list: %q", content)
+	}
 }
 
 type toolExecStub struct {

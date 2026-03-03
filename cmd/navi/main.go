@@ -9,9 +9,12 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -20,8 +23,11 @@ import (
 	navcmd "navi/cmd/navi/cmd"
 	llmadapter "navi/internal/adapters/llm/openai"
 	"navi/internal/adapters/mcp/inprocess"
+	"navi/internal/adapters/registry/localfs"
 	"navi/internal/adapters/tools"
 	"navi/internal/config"
+	"navi/internal/core/domain"
+	"navi/internal/core/ports"
 	"navi/internal/core/services/chat"
 	orchestratorsvc "navi/internal/core/services/orchestrator"
 	"navi/internal/telemetry"
@@ -89,7 +95,21 @@ func run(args []string, out io.Writer) error {
 		return mcpClient.CallTool(ctx, "echo", input)
 	})
 
+	defaultAgents, agentIDs, err := loadDefaultSpecialistAgents()
+	if err != nil {
+		telemetry.Logger().Error("load_default_agents_failed", "error", err.Error())
+	} else {
+		telemetry.Logger().Info("load_default_agents_done", "count", len(defaultAgents), "agents", strings.Join(agentIDs, ","))
+	}
+	if len(defaultAgents) > 0 {
+		err := toolRegistry.Register("agent.call", "Call a default specialist agent. Input JSON: {\"agent_id\":\"coder\",\"prompt\":\"...\"}", buildAgentDelegationTool(adapter, defaultAgents))
+		if err != nil {
+			telemetry.Logger().Error("register_agent_call_tool_failed", "error", err.Error())
+		}
+	}
+
 	orchestratorService := orchestratorsvc.New(adapter, toolRegistry)
+	orchestratorService.SetAvailableAgents(agentIDs)
 
 	deps := navcmd.Dependencies{
 		Chat:         chatService,
@@ -247,4 +267,129 @@ func providerPreset(cfg config.Config, apiKey string) pkgopenai.Config {
 	}
 
 	return preset
+}
+
+func defaultAgentRoots() ([]string, error) {
+	baseDir, err := config.Dir()
+	if err != nil {
+		return nil, err
+	}
+
+	roots := []string{filepath.Join(baseDir, "agents")}
+	if wd, err := os.Getwd(); err == nil {
+		roots = append(roots, filepath.Join(wd, "configs", "agents"))
+	}
+	return roots, nil
+}
+
+func loadDefaultSpecialistAgents() (map[string]*domain.GenericAgent, []string, error) {
+	roots, err := defaultAgentRoots()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	loaded, err := localfs.LoadGenericAgentsFromRoots(roots)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	byID := make(map[string]*domain.GenericAgent, len(loaded))
+	ids := make([]string, 0, len(loaded))
+	for _, ga := range loaded {
+		if ga == nil {
+			continue
+		}
+		id := ga.ID()
+		if id == "" {
+			continue
+		}
+		if !isSpecialistAgentID(id) {
+			continue
+		}
+		byID[id] = ga
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return byID, ids, nil
+}
+
+func isSpecialistAgentID(id string) bool {
+	switch strings.ToLower(strings.TrimSpace(id)) {
+	case "planner", "researcher", "coder", "tester":
+		return true
+	default:
+		return false
+	}
+}
+
+type agentToolInput struct {
+	AgentID string `json:"agent_id"`
+	Prompt  string `json:"prompt"`
+	Task    string `json:"task"`
+	Message string `json:"message"`
+}
+
+func buildAgentDelegationTool(llm ports.LLMPort, agents map[string]*domain.GenericAgent) tools.Handler {
+	return func(ctx context.Context, input string) (string, error) {
+		traceID := telemetry.TraceID(ctx)
+		agentID, prompt, err := parseAgentCallInput(input)
+		if err != nil {
+			telemetry.Logger().Error("agent_call_input_invalid", "trace_id", traceID, "error", err.Error())
+			return "", err
+		}
+
+		agent, ok := agents[agentID]
+		if !ok {
+			telemetry.Logger().Error("agent_call_unknown_agent", "trace_id", traceID, "agent_id", agentID)
+			return "", fmt.Errorf("agent.call: unknown agent %q", agentID)
+		}
+
+		messages := agent.BuildMessages(prompt)
+		telemetry.Logger().Info("agent_call_start", "trace_id", traceID, "agent_id", agentID, "prompt_chars", len(prompt))
+		reply, err := llm.Chat(ctx, messages)
+		if err != nil {
+			telemetry.Logger().Error("agent_call_failed", "trace_id", traceID, "agent_id", agentID, "error", err.Error())
+			return "", fmt.Errorf("agent.call: %w", err)
+		}
+		telemetry.Logger().Info("agent_call_done", "trace_id", traceID, "agent_id", agentID, "reply_chars", len(reply))
+		return strings.TrimSpace(reply), nil
+	}
+}
+
+func parseAgentCallInput(raw string) (string, string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", "", fmt.Errorf("agent.call: input cannot be empty")
+	}
+
+	var payload agentToolInput
+	if strings.HasPrefix(raw, "{") {
+		if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+			return "", "", fmt.Errorf("agent.call: invalid JSON input: %w", err)
+		}
+	} else {
+		parts := strings.SplitN(raw, ":", 2)
+		if len(parts) != 2 {
+			return "", "", fmt.Errorf("agent.call: input must be JSON or '<agent_id>: <prompt>'")
+		}
+		payload.AgentID = strings.TrimSpace(parts[0])
+		payload.Prompt = strings.TrimSpace(parts[1])
+	}
+
+	agentID := strings.TrimSpace(payload.AgentID)
+	prompt := strings.TrimSpace(payload.Prompt)
+	if prompt == "" {
+		prompt = strings.TrimSpace(payload.Task)
+	}
+	if prompt == "" {
+		prompt = strings.TrimSpace(payload.Message)
+	}
+
+	if agentID == "" {
+		return "", "", fmt.Errorf("agent.call: agent_id is required")
+	}
+	if prompt == "" {
+		return "", "", fmt.Errorf("agent.call: prompt is required")
+	}
+	return agentID, prompt, nil
 }

@@ -1,0 +1,7 @@
+id = "coder"
+type = "generic"
+name = "Coder"
+description = "Implements and refactors code changes"
+prompt = "AGENT.md"
+capabilities = ["reasoning:code", "filesystem:workspace:rw"]
+status = "trusted"

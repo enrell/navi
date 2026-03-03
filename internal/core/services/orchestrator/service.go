@@ -38,10 +38,29 @@ type Service struct {
 	llm      ports.LLMPort
 	tools    ports.ToolExecutor
 	maxTurns int
+	agents   []string
 }
 
 func New(llm ports.LLMPort, tools ports.ToolExecutor) *Service {
 	return &Service{llm: llm, tools: tools, maxTurns: defaultMaxTurns}
+}
+
+func (s *Service) SetAvailableAgents(agentIDs []string) {
+	cleaned := make([]string, 0, len(agentIDs))
+	seen := make(map[string]struct{}, len(agentIDs))
+	for _, id := range agentIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		cleaned = append(cleaned, id)
+	}
+	sort.Strings(cleaned)
+	s.agents = cleaned
 }
 
 // Ask runs a short plan/act loop.
@@ -159,6 +178,16 @@ func (s *Service) buildSystemPrompt(ctx context.Context) (string, error) {
 			desc = "no description"
 		}
 		lines = append(lines, "- "+name+": "+desc)
+	}
+
+	if len(s.agents) > 0 {
+		lines = append(lines,
+			"Available specialist agents (loaded at startup):",
+			"Use tool agent.call to delegate work when specialization helps.",
+		)
+		for _, id := range s.agents {
+			lines = append(lines, "- "+id)
+		}
 	}
 
 	return strings.Join(lines, "\n"), nil

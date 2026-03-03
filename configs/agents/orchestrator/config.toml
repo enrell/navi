@@ -1,0 +1,7 @@
+id = "orchestrator"
+type = "generic"
+name = "Orchestrator"
+description = "Coordinates specialist agents and tools"
+prompt = "AGENT.md"
+capabilities = ["reasoning:orchestrate", "tool:*", "agent:delegate"]
+status = "trusted"

@@ -14,8 +14,8 @@ import (
 	agentsvc "navi/internal/core/services/agent"
 	"navi/internal/core/services/chat"
 	orchestratorsvc "navi/internal/core/services/orchestrator"
-	"navi/internal/telemetry"
 	tasksvc "navi/internal/core/services/task"
+	"navi/internal/telemetry"
 )
 
 // Dependencies carries the wired application services into the command tree.

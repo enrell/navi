@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -12,6 +13,8 @@ import (
 	"testing"
 
 	"navi/internal/config"
+	"navi/internal/core/domain"
+	"navi/internal/core/ports"
 )
 
 func TestEnsureConfigDir_CreatesDirectory(t *testing.T) {
@@ -411,4 +414,73 @@ func clearNaviEnvOverrides(t *testing.T) {
 	t.Setenv("NAVI_DEFAULT_MODEL", "")
 	t.Setenv("NAVI_DEFAULT_API_KEY_ENV", "")
 	t.Setenv("NAVI_API_KEY", "")
+}
+
+type agentCallLLMStub struct {
+	reply    string
+	err      error
+	messages []domain.Message
+}
+
+func (s *agentCallLLMStub) Chat(_ context.Context, messages []domain.Message) (string, error) {
+	s.messages = messages
+	if s.err != nil {
+		return "", s.err
+	}
+	return s.reply, nil
+}
+
+var _ ports.LLMPort = (*agentCallLLMStub)(nil)
+
+func TestParseAgentCallInput_JSON(t *testing.T) {
+	agentID, prompt, err := parseAgentCallInput(`{"agent_id":"coder","prompt":"fix bug"}`)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	if agentID != "coder" || prompt != "fix bug" {
+		t.Fatalf("got (%q,%q), want (coder,fix bug)", agentID, prompt)
+	}
+}
+
+func TestParseAgentCallInput_ColonFormat(t *testing.T) {
+	agentID, prompt, err := parseAgentCallInput("tester: run tests")
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	if agentID != "tester" || prompt != "run tests" {
+		t.Fatalf("got (%q,%q), want (tester,run tests)", agentID, prompt)
+	}
+}
+
+func TestBuildAgentDelegationTool_CallsSelectedAgent(t *testing.T) {
+	llm := &agentCallLLMStub{reply: "done"}
+	coder, err := domain.NewGenericAgent(domain.AgentConfig{ID: "coder", Type: domain.AgentTypeGeneric, Name: "Coder"}, "You are coder")
+	if err != nil {
+		t.Fatalf("NewGenericAgent: %v", err)
+	}
+	tool := buildAgentDelegationTool(llm, map[string]*domain.GenericAgent{"coder": coder})
+
+	got, err := tool(context.Background(), `{"agent_id":"coder","prompt":"implement feature"}`)
+	if err != nil {
+		t.Fatalf("tool error: %v", err)
+	}
+	if got != "done" {
+		t.Fatalf("got %q, want done", got)
+	}
+	if len(llm.messages) == 0 || llm.messages[0].Role != domain.RoleSystem {
+		t.Fatalf("unexpected messages sent to llm: %+v", llm.messages)
+	}
+}
+
+func TestIsSpecialistAgentID(t *testing.T) {
+	for _, id := range []string{"planner", "researcher", "coder", "tester", "CODER"} {
+		if !isSpecialistAgentID(id) {
+			t.Fatalf("expected %q to be specialist", id)
+		}
+	}
+	for _, id := range []string{"orchestrator", "", "foo"} {
+		if isSpecialistAgentID(id) {
+			t.Fatalf("expected %q not to be specialist", id)
+		}
+	}
 }

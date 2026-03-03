@@ -18,8 +18,8 @@ import (
 
 	"navi/internal/core/domain"
 	agentsvc "navi/internal/core/services/agent"
-	"navi/internal/telemetry"
 	tasksvc "navi/internal/core/services/task"
+	"navi/internal/telemetry"
 )
 
 // Server is the HTTP adapter for Navi's REST API.

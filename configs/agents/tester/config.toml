@@ -1,0 +1,7 @@
+id = "tester"
+type = "generic"
+name = "Tester"
+description = "Designs and validates tests for code behavior"
+prompt = "AGENT.md"
+capabilities = ["reasoning:test", "exec:go test"]
+status = "trusted"

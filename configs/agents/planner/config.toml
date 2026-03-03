@@ -1,0 +1,7 @@
+id = "planner"
+type = "generic"
+name = "Planner"
+description = "Breaks tasks into clear actionable plans"
+prompt = "AGENT.md"
+capabilities = ["reasoning:planning"]
+status = "trusted"

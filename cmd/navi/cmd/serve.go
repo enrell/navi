@@ -14,8 +14,8 @@ import (
 	"navi/internal/adapters/storage/sqlite"
 	"navi/internal/config"
 	agentsvc "navi/internal/core/services/agent"
-	"navi/internal/telemetry"
 	tasksvc "navi/internal/core/services/task"
+	"navi/internal/telemetry"
 )
 
 var taskDBPath = defaultTaskDBPath

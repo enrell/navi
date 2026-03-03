@@ -232,10 +232,11 @@ Navi uses **filesystem as interface** and **SQLite as validator** (Checksum Stor
 **Sprint 1 goal:** Run TUI, ask model to use tools, and verify tools execute correctly.
 
 ### Sprint 2 (planned)
-- Basic specialist agents (planner, researcher, coder, tester), one active at a time
-- Basic native MCP tools expansion
-- More CLI commands
-- TUI UX improvements
+- Basic specialist agents (planner, researcher, coder, tester), one active at a time ✅
+- Orchestrator delegation tool (`agent.call`) with startup-loaded agent list in system prompt ✅
+- Basic native MCP tools expansion ⏳
+- More CLI commands ⏳
+- TUI UX improvements ⏳
 
 **Sprint 2 goal:** In TUI chat, model can call MCP tools and delegate to specialist agents (without full agency yet).
 

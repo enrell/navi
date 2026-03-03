@@ -1,0 +1,7 @@
+id = "researcher"
+type = "generic"
+name = "Researcher"
+description = "Collects and summarizes relevant technical information"
+prompt = "AGENT.md"
+capabilities = ["reasoning:research"]
+status = "trusted"
