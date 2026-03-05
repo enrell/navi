@@ -142,18 +142,18 @@ Navi is built on **Hexagonal Architecture**, which means:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    Entry Points (Ports)                      │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐    │
-│  │   TUI    │  │ REST API │  │ Discord  │  │ Telegram │    │
-│  └──────────┘  └──────────┘  └──────────┘  └──────────┘    │
+│                    Entry Points (Ports)                     │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐     │
+│  │   TUI    │  │ REST API │  │ Discord  │  │ Telegram │     │
+│  └──────────┘  └──────────┘  └──────────┘  └──────────┘     │
 └─────────────────────────────────────────────────────────────┘
                          │
                          ▼
 ┌──────────────────────────────────────────────────────────────┐
-│                 Authentication Layer (Required)               │
-│  - API Keys / Tokens                                        │
-│  - User Sessions                                            │
-│  - Permission Checks                                        │
+│                 Authentication Layer (Required)              │
+│  - API Keys / Tokens                                         │
+│  - User Sessions                                             │
+│  - Permission Checks                                         │
 └──────────────────────────────────────────────────────────────┘
                          │
                          ▼
@@ -170,12 +170,12 @@ Navi is built on **Hexagonal Architecture**, which means:
                          ▼
 ┌──────────────────────────────────────────────────────────────┐
 │                    Adapters (User-Selectable)                │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐       │
-│  │ Isolation    │  │ LLM Provider │  │ Storage      │       │
-│  │ - Docker     │  │ - OpenAI     │  │ - SQLite     │       │
-│  │ - Bubblewrap │  │ - Anthropic  │  │ - Postgres   │       │
-│  │ - Native     │  │ - Ollama     │  │ - S3         │       │
-│  └──────────────┘  └──────────────┘  └──────────────┘       │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐        │
+│  │ Isolation    │  │ LLM Provider │  │ Storage      │        │
+│  │ - Docker     │  │ - OpenAI     │  │ - SQLite     │        │
+│  │ - Bubblewrap │  │ - Anthropic  │  │ - Postgres   │        │
+│  │ - Native     │  │ - Ollama     │  │ - S3         │        │
+│  └──────────────┘  └──────────────┘  └──────────────┘        │
 └──────────────────────────────────────────────────────────────┘
 ```
 
