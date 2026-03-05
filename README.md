@@ -401,7 +401,7 @@ Navi is built around LLM weaknesses, not their strengths:
 
 ## Tech Stack
 
-- **Language**: Go 1.21+
+- **Language**: Go 1.25+
 - **Architecture**: Hexagonal (Ports & Adapters)
 - **Isolation**: Docker, Bubblewrap, or Native (user choice)
 - **UI**: REST API (default), REPL, Bubble Tea TUI (planned)
