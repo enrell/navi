@@ -252,9 +252,9 @@ Navi uses **filesystem as interface** and **SQLite as validator** (Checksum Stor
 **Sprint 2 goal:** In TUI chat, model can call MCP tools directly when efficient, and delegate to specialist agents when explicitly requested or beneficial (without full agency yet).
 
 ### Sprint 3 (in progress)
-- Improve the local terminal experience around the orchestrator-first interaction model
-- Make delegation/tool activity clearer in the TUI transcript
-- Continue toward broader agency behavior and multi-agent coordination
+- Implement sandbox system
+- Implement the agent orchestration queue system
+- Add true agency in agency-mode, to orchestrator manage the agents by yourself
 
 ## Dependencies
 
