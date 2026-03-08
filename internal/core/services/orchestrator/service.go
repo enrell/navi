@@ -35,6 +35,7 @@ const (
 type TraceEvent struct {
 	Type    TraceEventType
 	Tool    string
+	Input   string
 	Content string
 }
 
@@ -108,7 +109,7 @@ func (s *Service) AskWithTrace(ctx context.Context, userMessage string) (string,
 		}
 		trace := []TraceEvent{
 			{Type: TraceThinking, Content: "User explicitly requested specialist delegation."},
-			{Type: TraceToolResponse, Tool: "agent.call", Content: result},
+			{Type: TraceToolResponse, Tool: "agent.call", Input: input, Content: result},
 			{Type: TraceOrchestrator, Content: finalReply},
 		}
 		logger.Info("ask_completed", "turn", 0, "tool_calls", 1, "reply_chars", len(finalReply))
@@ -162,7 +163,7 @@ func (s *Service) AskWithTrace(ctx context.Context, userMessage string) (string,
 			}
 			logger.Info("tool_call_result", "tool", call.Name, "result_chars", len(result))
 
-			trace = append(trace, TraceEvent{Type: TraceToolResponse, Tool: call.Name, Content: result})
+			trace = append(trace, TraceEvent{Type: TraceToolResponse, Tool: call.Name, Input: call.Input, Content: result})
 			toolResults = append(toolResults, fmt.Sprintf("TOOL_RESULT name=%s\n%s", call.Name, result))
 		}
 

@@ -121,6 +121,18 @@ func TestRepl_CommandRegistered(t *testing.T) {
 	}
 }
 
+func TestTUI_CommandRegistered(t *testing.T) {
+	var buf bytes.Buffer
+	root := cmd.NewRootCommand(newDeps("", nil), &buf)
+	tuiCmd, _, err := root.Find([]string{"tui"})
+	if err != nil {
+		t.Fatalf("Find tui: %v", err)
+	}
+	if tuiCmd.Use != "tui" {
+		t.Errorf("Use = %q, want tui", tuiCmd.Use)
+	}
+}
+
 func TestRepl_OneMessageThenExit(t *testing.T) {
 	in := strings.NewReader("PING\nexit\n")
 	out, err := executeWithInput(newDeps("PONG", nil), in, "repl")
@@ -193,6 +205,127 @@ func TestRepl_ClearSectionsForThinkingAndToolResponse(t *testing.T) {
 	}
 }
 
+func TestRepl_HelpCommand(t *testing.T) {
+	in := strings.NewReader(":help\nquit\n")
+	out, err := executeWithInput(newDeps("PONG", nil), in, "repl")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, want := range []string{"Commands:", ":help", ":agents"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output %q should contain %q", out, want)
+		}
+	}
+}
+
+func TestRepl_AgentsCommand(t *testing.T) {
+	llm := &stubLLM{reply: "PONG"}
+	deps := cmd.Dependencies{
+		Chat:   chat.New(llm),
+		Agents: agentsvc.New(memory.NewAgentRepository([]*domain.Agent{{ID: "researcher", Name: "Researcher"}})),
+	}
+
+	in := strings.NewReader(":agents\nquit\n")
+	out, err := executeWithInput(deps, in, "repl")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "researcher: Researcher") {
+		t.Errorf("output %q should contain agent listing", out)
+	}
+}
+
+func TestAgents_CommandRegistered(t *testing.T) {
+	var buf bytes.Buffer
+	root := cmd.NewRootCommand(newDeps("", nil), &buf)
+	agentsCmd, _, err := root.Find([]string{"agents"})
+	if err != nil {
+		t.Fatalf("Find agents: %v", err)
+	}
+	if agentsCmd.Use != "agents" {
+		t.Errorf("Use = %q, want agents", agentsCmd.Use)
+	}
+}
+
+func TestAgents_ListReturnsJSON(t *testing.T) {
+	deps := newDeps("", nil)
+	deps.Agents = agentsvc.New(memory.NewAgentRepository([]*domain.Agent{{ID: "coder", Name: "Coder"}}))
+
+	out, err := execute(deps, "agents", "list")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out, `"id": "coder"`) {
+		t.Errorf("output %q should contain coder agent JSON", out)
+	}
+}
+
+func TestAgents_GetReturnsJSON(t *testing.T) {
+	deps := newDeps("", nil)
+	deps.Agents = agentsvc.New(memory.NewAgentRepository([]*domain.Agent{{ID: "tester", Name: "Tester"}}))
+
+	out, err := execute(deps, "agents", "get", "tester")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out, `"name": "Tester"`) {
+		t.Errorf("output %q should contain tester agent JSON", out)
+	}
+}
+
+func TestTasks_CommandRegistered(t *testing.T) {
+	var buf bytes.Buffer
+	root := cmd.NewRootCommand(newDeps("", nil), &buf)
+	tasksCmd, _, err := root.Find([]string{"tasks"})
+	if err != nil {
+		t.Fatalf("Find tasks: %v", err)
+	}
+	if tasksCmd.Use != "tasks" {
+		t.Errorf("Use = %q, want tasks", tasksCmd.Use)
+	}
+}
+
+func TestTasks_CreateAndList(t *testing.T) {
+	deps := newDeps("done", nil)
+
+	created, err := execute(deps, "tasks", "create", "ship", "it")
+	if err != nil {
+		t.Fatalf("create error: %v", err)
+	}
+	if !strings.Contains(created, `"status": "completed"`) {
+		t.Fatalf("create output %q should contain completed status", created)
+	}
+
+	listed, err := execute(deps, "tasks", "list")
+	if err != nil {
+		t.Fatalf("list error: %v", err)
+	}
+	if !strings.Contains(listed, `"prompt": "ship it"`) {
+		t.Errorf("list output %q should contain created task", listed)
+	}
+}
+
+func TestTasks_GetReturnsCreatedTask(t *testing.T) {
+	deps := newDeps("done", nil)
+
+	created, err := execute(deps, "tasks", "create", "inspect", "me")
+	if err != nil {
+		t.Fatalf("create error: %v", err)
+	}
+	id := extractJSONField(created, `"id":`)
+	if id == "" {
+		t.Fatalf("could not extract task id from %q", created)
+	}
+
+	got, err := execute(deps, "tasks", "get", id)
+	if err != nil {
+		t.Fatalf("get error: %v", err)
+	}
+	if !strings.Contains(got, `"prompt": "inspect me"`) {
+		t.Errorf("get output %q should contain created task", got)
+	}
+}
+
 // ── serve command ─────────────────────────────────────────────────────────────
 // The serve command starts a real, blocking HTTP server, so we do NOT invoke
 // it end-to-end here. Full HTTP handler coverage lives in
@@ -262,4 +395,22 @@ func (s *sequenceLLM) Chat(_ context.Context, _ []domain.Message) (string, error
 	r := s.replies[s.i]
 	s.i++
 	return r, nil
+}
+
+func extractJSONField(raw string, prefix string) string {
+	idx := strings.Index(raw, prefix)
+	if idx < 0 {
+		return ""
+	}
+	rest := raw[idx+len(prefix):]
+	firstQuote := strings.Index(rest, `"`)
+	if firstQuote < 0 {
+		return ""
+	}
+	rest = rest[firstQuote+1:]
+	secondQuote := strings.Index(rest, `"`)
+	if secondQuote < 0 {
+		return ""
+	}
+	return rest[:secondQuote]
 }

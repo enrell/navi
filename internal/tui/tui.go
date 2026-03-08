@@ -114,7 +114,7 @@ type responseMsg struct {
 }
 
 type agentListMsg struct {
-	Agents []string
+	Agents map[string]*domain.Agent
 	Err    error
 }
 
@@ -128,7 +128,7 @@ type model struct {
 	history           []string
 	historyIndex      int
 	workspaceFiles    []string
-	agents            []string
+	agents            map[string]*domain.Agent
 	entries           []transcriptEntry
 	turns             []conversationTurn
 	summary           string
@@ -205,10 +205,10 @@ func Run(ctx context.Context, in io.Reader, out io.Writer, services Services) er
 		workspaceFiles: files,
 		showToolLogs:   false,
 	}
-	m.appendEntry(entrySystem, "Session", "Navi orchestrator ready. Enter sends, Ctrl+J adds a new line, Ctrl+P opens commands, Ctrl+T toggles tool logs.", false)
+	m.appendEntry(entrySystem, "Session", "Navi orchestrator ready. Enter sends, Ctrl+J adds a new line, PgUp/PgDn scroll, Ctrl+P opens commands, Ctrl+T toggles tool logs.", false)
 	m.refreshViewport()
 
-	program := tea.NewProgram(m, tea.WithAltScreen(), tea.WithInput(in), tea.WithOutput(out))
+	program := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithInput(in), tea.WithOutput(out))
 	finalModel, err := program.Run()
 	if fm, ok := finalModel.(model); ok && fm.renderer != nil {
 		_ = fm.renderer.Close()
@@ -255,7 +255,7 @@ func interfaceIsNil(value any) bool {
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(m.spinner.Tick, m.textarea.Focus())
+	return tea.Batch(m.spinner.Tick, loadAgentsCmd(m.services.Agents), m.textarea.Focus())
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -275,6 +275,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.spinner, cmd = m.spinner.Update(msg)
 			return m, cmd
 		}
+
+	case agentListMsg:
+		if msg.Err == nil && len(msg.Agents) > 0 {
+			m.agents = msg.Agents
+		}
+		return m, nil
 
 	case responseMsg:
 		m.pending = false
@@ -299,11 +305,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case orchestratorsvc.TraceThinking:
 				m.appendEntry(entryThinking, "Thinking", event.Content, true)
 			case orchestratorsvc.TraceToolResponse:
-				title := "Tool"
-				if strings.TrimSpace(event.Tool) != "" {
-					title = "Tool: " + strings.TrimSpace(event.Tool)
-				}
-				m.appendEntry(entryTool, title, event.Content, true)
+				m.appendEntry(entryTool, renderToolTitle(event.Tool), m.formatToolTrace(event), true)
 			case orchestratorsvc.TraceOrchestrator:
 				// Final reply is appended below so the ordering remains consistent.
 			}
@@ -351,6 +353,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.paletteQuery = ""
 			m.refreshViewport()
 			return m, nil
+		case "pgup":
+			m.viewport.PageUp()
+			return m, nil
+		case "pgdown":
+			m.viewport.PageDown()
+			return m, nil
+		case "home":
+			m.viewport.GotoTop()
+			return m, nil
+		case "end":
+			m.viewport.GotoBottom()
+			return m, nil
+		case "ctrl+u":
+			m.viewport.HalfViewUp()
+			return m, nil
+		case "ctrl+d":
+			m.viewport.HalfViewDown()
+			return m, nil
 		case "enter":
 			cmd := m.submit()
 			m.refreshViewport()
@@ -369,6 +389,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.historyForward()
 			m.refreshMention()
 			m.refreshViewport()
+			return m, nil
+		case "ctrl+up":
+			m.viewport.LineUp(1)
+			return m, nil
+		case "ctrl+down":
+			m.viewport.LineDown(1)
 			return m, nil
 		case "ctrl+s":
 			cmd := m.submit()
@@ -494,16 +520,88 @@ func loadAgentsCmd(agents AgentLister) tea.Cmd {
 		if err != nil {
 			return agentListMsg{Err: err}
 		}
-		ids := make([]string, 0, len(list))
+		items := make(map[string]*domain.Agent, len(list))
 		for _, agent := range list {
 			if agent == nil || strings.TrimSpace(agent.ID) == "" {
 				continue
 			}
-			ids = append(ids, agent.ID)
+			copyAgent := *agent
+			items[copyAgent.ID] = &copyAgent
 		}
-		sort.Strings(ids)
-		return agentListMsg{Agents: ids}
+		return agentListMsg{Agents: items}
 	}
+}
+
+func renderToolTitle(toolName string) string {
+	toolName = strings.TrimSpace(toolName)
+	if toolName == "" {
+		return "Tool"
+	}
+	return "Tool: " + toolName
+}
+
+func (m model) formatToolTrace(event orchestratorsvc.TraceEvent) string {
+	parts := make([]string, 0, 8)
+	toolName := strings.TrimSpace(event.Tool)
+	if toolName != "" {
+		parts = append(parts, "Name: "+toolName)
+		if desc := toolDescription(toolName); desc != "" {
+			parts = append(parts, "Purpose: "+desc)
+		}
+	}
+	if toolName == "agent.call" {
+		agentID, prompt := parseAgentCallPayload(event.Input)
+		if agentID != "" {
+			parts = append(parts, "Delegated agent: "+agentID)
+			if agent, ok := m.agents[agentID]; ok && agent != nil {
+				parts = append(parts, "Agent status: "+string(agent.Status))
+				if strings.TrimSpace(agent.Description) != "" {
+					parts = append(parts, "Agent role: "+strings.TrimSpace(agent.Description))
+				}
+			}
+		}
+		if prompt != "" {
+			parts = append(parts, "Request:\n"+prompt)
+		}
+	} else if strings.TrimSpace(event.Input) != "" {
+		parts = append(parts, "Input:\n"+strings.TrimSpace(event.Input))
+	}
+	if strings.TrimSpace(event.Content) != "" {
+		parts = append(parts, "Result:\n"+strings.TrimSpace(event.Content))
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+func toolDescription(toolName string) string {
+	switch strings.TrimSpace(toolName) {
+	case "agent.call":
+		return "Delegates a request to a specialist agent and returns that agent's result."
+	case "native.list_dirs":
+		return "Lists directories in the requested path."
+	case "native.read_file":
+		return "Reads file content from the workspace."
+	case "mcp.echo":
+		return "Returns the provided input for testing MCP connectivity."
+	case "mcp.logs":
+		return "Queries recent structured logs from the in-process MCP adapter."
+	default:
+		return ""
+	}
+}
+
+func parseAgentCallPayload(raw string) (string, string) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", ""
+	}
+	var payload struct {
+		AgentID string `json:"agent_id"`
+		Prompt  string `json:"prompt"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return "", ""
+	}
+	return strings.TrimSpace(payload.AgentID), strings.TrimSpace(payload.Prompt)
 }
 
 func (m *model) refreshViewport() {

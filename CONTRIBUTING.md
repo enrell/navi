@@ -56,7 +56,8 @@ Harassment or discrimination in any form will not be tolerated.
 
     **Alternative interfaces:**
     ```bash
-    ./navi repl         # Terminal REPL
+    ./navi repl         # Full-screen terminal UI (or use --plain for line REPL)
+    ./navi tui          # Explicit Bubble Tea TUI entry point
     ./navi chat <msg>   # Single chat message
     ```
 

@@ -246,16 +246,24 @@ Navi doesn't lock you into a single UI. Choose your interface:
 - **Authentication**: API keys, JWT
 
 ### 2. REPL (Terminal)
-- Interactive terminal REPL
+- Interactive full-screen terminal UI by default, with a plain line REPL fallback via `navi repl --plain`
 - **Start**: `navi repl`
+- Direct TUI entry: `navi tui`
+- TUI features: markdown rendering, syntax-highlighted code blocks, diff coloring, multi-line editing, persistent prompt history, `@file` completion, collapsible tool logs, mode switching, status bar, interrupt handling
+- Plain REPL commands: `:help`, `:agents`, `exit`, `quit`
 - **Authentication**: local token or password
 
-### 3. Messaging Bots
+### 3. Local CLI Commands
+- Single-shot chat: `navi chat <msg>`
+- Task lifecycle: `navi tasks create <prompt>`, `navi tasks list`, `navi tasks get <id>`
+- Agent inspection/sync: `navi agents list`, `navi agents get <id>`, `navi agents sync`
+
+### 4. Messaging Bots
 - **Discord**: Secure server automation
 - **Telegram**: Remote task triggering
 - **Authentication**: user linking + optional PIN
 
-### 4. Custom Modes
+### 5. Custom Modes
 Define your own interaction mode via the adapter pattern.
 
 ---
@@ -404,7 +412,7 @@ Navi is built around LLM weaknesses, not their strengths:
 - **Language**: Go 1.21+
 - **Architecture**: Hexagonal (Ports & Adapters)
 - **Isolation**: Docker, Bubblewrap, or Native (user choice)
-- **UI**: REST API (default), REPL, Bubble Tea TUI (planned)
+- **UI**: REST API (default), REPL, Bubble Tea TUI
 - **Database**: SQLite (pure Go, no CGO) with WAL mode
 - **API**: Chi router for HTTP
 - **Authentication**: JWT, API Keys, OAuth adapters

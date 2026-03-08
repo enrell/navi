@@ -6,7 +6,7 @@ This file provides project context for AI assistants.
 
 Navi is a secure AI orchestrator built with hexagonal architecture. Agents are defined by config files (`config.toml` + `AGENT.md`), not hardcoded.
 
-Current focus is **Sprint 2 delegation/runtime behavior** (orchestrator delegation policy, specialist tool-loop behavior, MCP expansion, and REPL reliability).
+Current focus is **post-Sprint 2 local UX/runtime consolidation**: orchestrator delegation behavior is in place, and the active work is the local terminal experience, CLI surface, and trace visibility.
 
 ## Architecture
 
@@ -23,7 +23,9 @@ The current orchestrator implementation is intentionally minimal but now include
 - read-only direct tool access for orchestrator (to reduce unnecessary delegation/API usage)
 - delegated specialist tool loop via `agent.call` (specialists can call tools and return results)
 - basic in-process MCP integration (`mcp.echo`, `mcp.logs`)
-- clear REPL trace output sections (user/thinking/tool/orchestrator)
+- local agent/task inspection commands (`navi agents ...`, `navi tasks ...`)
+- full-screen Bubble Tea TUI with transcript rendering, tool/delegation trace panels, prompt history, `@file` completion, and scrollable transcript
+- clear REPL/TUI trace sections (user/thinking/tool/orchestrator)
 
 This is a foundation, not full multi-agent agency yet.
 
@@ -35,7 +37,7 @@ This is a foundation, not full multi-agent agency yet.
 | Orchestrator | `internal/core/services/orchestrator/` |
 | Domain | `internal/core/domain/` |
 | Adapters | `internal/adapters/` |
-| CLI Commands (repl/chat/serve) | `cmd/navi/cmd/` |
+| CLI Commands (repl/chat/serve/agents/tasks/tui) | `cmd/navi/cmd/` |
 | HTTP Adapter | `internal/adapters/http/` |
 | Local Agent Registry Loader | `internal/adapters/registry/localfs/` |
 | SQLite Repositories | `internal/adapters/storage/sqlite/` |
@@ -46,8 +48,11 @@ This is a foundation, not full multi-agent agency yet.
 |---------|-------------|----------|
 | `navi` | CLI root command (subcommands) | Direct |
 | `navi serve` | REST API server | HTTP |
-| `navi repl` | Terminal REPL | Direct |
+| `navi repl` | Interactive terminal UI / REPL | Direct |
+| `navi agents` | Local agent inspection and sync | Direct |
+| `navi tasks` | Local task creation and inspection | Direct |
 | `navi chat <msg>` | Single chat message | Direct |
+| `navi tui` | Full-screen Bubble Tea terminal UI | Direct |
 
 **Planned:**
 - `navi web` - Web UI
@@ -235,19 +240,21 @@ Navi uses **filesystem as interface** and **SQLite as validator** (Checksum Stor
 
 **Sprint 1 goal:** Run TUI, ask model to use tools, and verify tools execute correctly.
 
-### Sprint 2 (planned)
+### Sprint 2 (complete)
 - Basic specialist agents (planner, researcher, coder, tester), one active at a time ✅
 - Orchestrator delegation tool (`agent.call`) with startup-loaded agent list in system prompt ✅
 - Delegated specialist tool loop (specialist can call tools via `TOOL_CALL`) ✅
 - Explicit specialist-instruction enforcement (direct user instruction to use specialist is followed deterministically) ✅
-- Basic native MCP tools expansion (`mcp.echo`, `mcp.logs`) ⏳
-- More CLI commands ⏳
-- TUI UX improvements ⏳
+- Basic native MCP tools expansion (`mcp.echo`, `mcp.logs`) ✅
+- More CLI commands ✅
+- TUI UX improvements ✅
 
 **Sprint 2 goal:** In TUI chat, model can call MCP tools directly when efficient, and delegate to specialist agents when explicitly requested or beneficial (without full agency yet).
 
-### Sprint 3 (planned)
-- Agency behavior and multi-agent coordination
+### Sprint 3 (in progress)
+- Improve the local terminal experience around the orchestrator-first interaction model
+- Make delegation/tool activity clearer in the TUI transcript
+- Continue toward broader agency behavior and multi-agent coordination
 
 ## Dependencies
 

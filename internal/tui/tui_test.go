@@ -4,7 +4,9 @@ import (
 	"strings"
 	"testing"
 
+	"navi/internal/core/domain"
 	agentsvc "navi/internal/core/services/agent"
+	orchestratorsvc "navi/internal/core/services/orchestrator"
 )
 
 func TestBuildPrompt_WithoutHistory(t *testing.T) {
@@ -70,6 +72,29 @@ func TestRenderInputValue_PlacesCursorOnCurrentLine(t *testing.T) {
 	got := renderInputValue("one\ntwo", "", 1, 1)
 	if !strings.Contains(got, "t") || !strings.Contains(got, "wo") {
 		t.Fatalf("got %q, expected multiline value", got)
+	}
+}
+
+func TestFormatToolTrace_AgentCallIncludesAgentStatus(t *testing.T) {
+	m := model{
+		agents: map[string]*domain.Agent{
+			"researcher": {
+				ID:          "researcher",
+				Description: "Investigates and summarizes findings.",
+				Status:      domain.AgentStatusTrusted,
+			},
+		},
+	}
+	event := orchestratorsvc.TraceEvent{
+		Tool:    "agent.call",
+		Input:   `{"agent_id":"researcher","prompt":"List the directories"}`,
+		Content: "dir list result",
+	}
+	got := m.formatToolTrace(event)
+	for _, want := range []string{"Name: agent.call", "Delegated agent: researcher", "Agent status: trusted", "Request:\nList the directories", "Result:\ndir list result"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("formatted tool trace %q should contain %q", got, want)
+		}
 	}
 }
 

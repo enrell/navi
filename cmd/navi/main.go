@@ -196,6 +196,9 @@ func run(args []string, out io.Writer) error {
 		Tasks:        nil, // serve command lazily wires SQLite-backed task service
 		Agents:       nil, // serve command lazily wires SQLite-backed agent service
 		Orchestrator: orchestratorService,
+		ModelName:    llmCfg.Model,
+		WorkDir:      mustGetwd(),
+		ContextLimit: inferContextWindow(llmCfg.Model),
 	}
 
 	root := navcmd.NewRootCommand(deps, out)
@@ -746,6 +749,26 @@ func parseListDirsInput(input string) (string, int, error) {
 	}
 
 	return trimmed, 0, nil
+}
+
+func mustGetwd() string {
+	wd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	return wd
+}
+
+func inferContextWindow(model string) int {
+	name := strings.ToLower(strings.TrimSpace(model))
+	switch {
+	case strings.Contains(name, "gpt-4.1"):
+		return 1_000_000
+	case strings.Contains(name, "gpt-4o"), strings.Contains(name, "o4"):
+		return 128_000
+	default:
+		return 128_000
+	}
 }
 
 func parseAgentCallInput(raw string) (string, string, error) {

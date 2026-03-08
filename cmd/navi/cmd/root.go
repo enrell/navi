@@ -25,6 +25,9 @@ type Dependencies struct {
 	Tasks        *tasksvc.Service
 	Agents       *agentsvc.Service
 	Orchestrator *orchestratorsvc.Service
+	ModelName    string
+	WorkDir      string
+	ContextLimit int
 }
 
 // NewRootCommand builds and returns the fully configured cobra command tree.
@@ -51,7 +54,10 @@ Agents are defined by config files, not hardcoded.`,
 
 	root.AddCommand(newChatCommand(deps, out))
 	root.AddCommand(newReplCommand(deps, out))
+	root.AddCommand(newTUICommand(deps, out))
 	root.AddCommand(newServeCommand(deps, out))
+	root.AddCommand(newAgentsCommand(deps, out))
+	root.AddCommand(newTasksCommand(deps, out))
 
 	return root
 }
