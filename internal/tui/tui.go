@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -152,7 +151,6 @@ type model struct {
 }
 
 var errStopWalk = errors.New("stop walk")
-var ansiEscapePattern = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
 func Run(ctx context.Context, in io.Reader, out io.Writer, services Services) error {
 	services = normalizeServices(services)
@@ -183,7 +181,7 @@ func Run(ctx context.Context, in io.Reader, out io.Writer, services Services) er
 	ta.MaxHeight = maxInputHeight
 	ta.EndOfBufferCharacter = ' '
 	ta.KeyMap.InsertNewline = key.NewBinding(
-		key.WithKeys("ctrl+shift+enter", "ctrl+enter", "shift+enter", "alt+enter", "ctrl+j"),
+		key.WithKeys("ctrl+j", "alt+enter", "ctrl+enter"),
 		key.WithHelp("ctrl+j", "insert newline"),
 	)
 	ta.Focus()
@@ -207,7 +205,7 @@ func Run(ctx context.Context, in io.Reader, out io.Writer, services Services) er
 		workspaceFiles: files,
 		showToolLogs:   false,
 	}
-	m.appendEntry(entrySystem, "Session", "Navi orchestrator ready. Enter sends, Ctrl+Shift+Enter adds a new line, Ctrl+P opens commands, Ctrl+T toggles tool logs.", false)
+	m.appendEntry(entrySystem, "Session", "Navi orchestrator ready. Enter sends, Ctrl+J adds a new line, Ctrl+P opens commands, Ctrl+T toggles tool logs.", false)
 	m.refreshViewport()
 
 	program := tea.NewProgram(m, tea.WithAltScreen(), tea.WithInput(in), tea.WithOutput(out))
@@ -691,7 +689,7 @@ func (m model) renderHeader() string {
 
 func (m model) renderInput() string {
 	accent := lipgloss.NewStyle().Foreground(lipgloss.Color("81")).Render("│")
-	content := lipgloss.NewStyle().Width(maxInt(m.width-10, 12)).Render(trimTextareaView(m.textarea.View(), explicitLineCount(m.textarea.Value())))
+	content := lipgloss.NewStyle().Width(maxInt(m.width-10, 12)).Render(renderInputValue(m.textarea.Value(), m.textarea.Placeholder, m.textarea.Line(), m.textarea.LineInfo().CharOffset))
 	lines := []string{lipgloss.JoinHorizontal(lipgloss.Top, accent+" ", content)}
 	if m.mention.Active && len(m.mention.Suggestions) > 0 {
 		lines = append(lines, lipgloss.NewStyle().Foreground(lipgloss.Color("177")).Render("@ matches: "+strings.Join(m.mention.Suggestions, "   ")))
@@ -706,7 +704,7 @@ func (m model) renderInput() string {
 
 func (m model) renderStatusBar() string {
 	left := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("252")).Render("Orchestrator")
-	rightParts := []string{"enter send", "ctrl+shift+enter newline", "ctrl+p commands", "ctrl+t logs"}
+	rightParts := []string{"enter send", "ctrl+j newline", "ctrl+p commands", "ctrl+t logs"}
 	if m.pending {
 		rightParts = append(rightParts, m.spinner.View()+" waiting")
 	}
@@ -823,19 +821,27 @@ func explicitLineCount(value string) int {
 	return strings.Count(value, "\n") + 1
 }
 
-func trimTextareaView(view string, minKeep int) string {
-	if minKeep < 1 {
-		minKeep = 1
+func renderInputValue(value string, placeholder string, lineIdx int, charOffset int) string {
+	cursor := lipgloss.NewStyle().Reverse(true).Render(" ")
+	if value == "" {
+		return cursor + lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render(placeholder)
 	}
-	trimmedView := strings.TrimRight(view, "\n")
-	lines := strings.Split(trimmedView, "\n")
-	for len(lines) > minKeep {
-		plain := ansiEscapePattern.ReplaceAllString(lines[len(lines)-1], "")
-		if strings.TrimSpace(plain) != "" {
-			break
-		}
-		lines = lines[:len(lines)-1]
+
+	lines := strings.Split(value, "\n")
+	if lineIdx < 0 {
+		lineIdx = 0
 	}
+	if lineIdx >= len(lines) {
+		lineIdx = len(lines) - 1
+	}
+	runes := []rune(lines[lineIdx])
+	if charOffset < 0 {
+		charOffset = 0
+	}
+	if charOffset > len(runes) {
+		charOffset = len(runes)
+	}
+	lines[lineIdx] = string(runes[:charOffset]) + cursor + string(runes[charOffset:])
 	return strings.Join(lines, "\n")
 }
 

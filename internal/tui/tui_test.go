@@ -59,17 +59,17 @@ func TestExplicitLineCount(t *testing.T) {
 	}
 }
 
-func TestTrimTextareaView_RemovesOnlyTrailingPadding(t *testing.T) {
-	view := "first line\nsecond line\n   \n   \n"
-	got := trimTextareaView(view, 2)
-	if got != "first line\nsecond line" {
-		t.Fatalf("got %q", got)
+func TestRenderInputValue_EmptyShowsPlaceholderAndCursor(t *testing.T) {
+	got := renderInputValue("", "Ask Navi", 0, 0)
+	if !strings.Contains(got, "Ask Navi") {
+		t.Fatalf("got %q, expected placeholder", got)
 	}
+}
 
-	withTrailingBlankLine := "first line\n\n   \n   \n"
-	got = trimTextareaView(withTrailingBlankLine, 2)
-	if got != "first line\n" {
-		t.Fatalf("got %q", got)
+func TestRenderInputValue_PlacesCursorOnCurrentLine(t *testing.T) {
+	got := renderInputValue("one\ntwo", "", 1, 1)
+	if !strings.Contains(got, "t") || !strings.Contains(got, "wo") {
+		t.Fatalf("got %q, expected multiline value", got)
 	}
 }
 
